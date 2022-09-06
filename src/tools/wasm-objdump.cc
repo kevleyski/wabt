@@ -18,16 +18,16 @@
 #include <cstdlib>
 #include <cstring>
 
+#include "src/binary-reader-objdump.h"
+#include "src/binary-reader.h"
 #include "src/common.h"
 #include "src/option-parser.h"
 #include "src/stream.h"
-#include "src/binary-reader.h"
-#include "src/binary-reader-objdump.h"
 
 using namespace wabt;
 
 static const char s_description[] =
-R"(  Print information about the contents of wasm binaries.
+    R"(  Print information about the contents of wasm binaries.
 
 examples:
   $ wasm-objdump test.wasm
@@ -53,14 +53,17 @@ static void ParseOptions(int argc, char** argv) {
                    []() { s_objdump_options.disassemble = true; });
   parser.AddOption("debug", "Print extra debug information", []() {
     s_objdump_options.debug = true;
-    s_log_stream = FileStream::CreateStdout();
+    s_log_stream = FileStream::CreateStderr();
     s_objdump_options.log_stream = s_log_stream.get();
   });
   parser.AddOption('x', "details", "Show section details",
                    []() { s_objdump_options.details = true; });
   parser.AddOption('r', "reloc", "Show relocations inline with disassembly",
                    []() { s_objdump_options.relocs = true; });
-  parser.AddHelpOption();
+  parser.AddOption(0, "section-offsets",
+                   "Print section offsets instead of file offsets "
+                   "in code disassembly",
+                   []() { s_objdump_options.section_offsets = true; });
   parser.AddArgument(
       "filename", OptionParser::ArgumentCount::OneOrMore,
       [](const char* argument) { s_infiles.push_back(argument); });
@@ -130,7 +133,7 @@ int ProgramMain(int argc, char** argv) {
     return 1;
   }
 
-  for (const char* filename: s_infiles) {
+  for (const char* filename : s_infiles) {
     if (Failed(dump_file(filename))) {
       return 1;
     }

@@ -17,8 +17,8 @@
 #include <cassert>
 #include <cstdarg>
 #include <cstdint>
-#include <cstdlib>
 #include <cstdio>
+#include <cstdlib>
 #include <string>
 
 #include "config.h"
@@ -49,11 +49,11 @@ static Features s_features;
 static std::unique_ptr<FileStream> s_log_stream;
 
 static const char s_description[] =
-R"(  read a file in the wasm text format, check it for errors, and
+    R"(  read a file in the wasm text format, check it for errors, and
   convert it to the wasm binary format.
 
 examples:
-  # parse and typecheck test.wat
+  # parse test.wat and write to .wasm binary file with the same name
   $ wat2wasm test.wat
 
   # parse test.wat and write to binary file test.wasm
@@ -69,16 +69,16 @@ static void ParseOptions(int argc, char* argv[]) {
 
   parser.AddOption('v', "verbose", "Use multiple times for more info", []() {
     s_verbose++;
-    s_log_stream = FileStream::CreateStdout();
+    s_log_stream = FileStream::CreateStderr();
   });
-  parser.AddHelpOption();
   parser.AddOption("debug-parser", "Turn on debugging the parser of wat files",
                    []() { s_debug_parsing = true; });
   parser.AddOption('d', "dump-module",
                    "Print a hexdump of the module to stdout",
                    []() { s_dump_module = true; });
   s_features.AddOptions(&parser);
-  parser.AddOption('o', "output", "FILE", "output wasm binary file",
+  parser.AddOption('o', "output", "FILE",
+                   "Output wasm binary file. Use \"-\" to write to stdout.",
                    [](const char* argument) { s_outfile = argument; });
   parser.AddOption(
       'r', "relocatable",
@@ -99,21 +99,26 @@ static void ParseOptions(int argc, char* argv[]) {
   parser.Parse(argc, argv);
 }
 
-static void WriteBufferToFile(string_view filename,
+static void WriteBufferToFile(std::string_view filename,
                               const OutputBuffer& buffer) {
   if (s_dump_module) {
+    std::unique_ptr<FileStream> stream = FileStream::CreateStdout();
     if (s_verbose) {
-      s_log_stream->Writef(";; dump\n");
+      stream->Writef(";; dump\n");
     }
     if (!buffer.data.empty()) {
-      s_log_stream->WriteMemoryDump(buffer.data.data(), buffer.data.size());
+      stream->WriteMemoryDump(buffer.data.data(), buffer.data.size());
     }
   }
 
-  buffer.WriteToFile(filename);
+  if (filename == "-") {
+    buffer.WriteToStdout();
+  } else {
+    buffer.WriteToFile(filename);
+  }
 }
 
-static std::string DefaultOuputName(string_view input_name) {
+static std::string DefaultOuputName(std::string_view input_name) {
   // Strip existing extension and add .wasm
   std::string result(StripExtension(GetBasename(input_name)));
   result += kWasmExtension;
@@ -126,35 +131,34 @@ int ProgramMain(int argc, char** argv) {
 
   ParseOptions(argc, argv);
 
-  std::unique_ptr<WastLexer> lexer = WastLexer::CreateFileLexer(s_infile);
-  if (!lexer) {
+  std::vector<uint8_t> file_data;
+  Result result = ReadFile(s_infile, &file_data);
+  std::unique_ptr<WastLexer> lexer = WastLexer::CreateBufferLexer(
+      s_infile, file_data.data(), file_data.size());
+  if (Failed(result)) {
     WABT_FATAL("unable to read file: %s\n", s_infile);
   }
 
   Errors errors;
   std::unique_ptr<Module> module;
   WastParseOptions parse_wast_options(s_features);
-  Result result =
-      ParseWatModule(lexer.get(), &module, &errors, &parse_wast_options);
+  result = ParseWatModule(lexer.get(), &module, &errors, &parse_wast_options);
+
+  if (Succeeded(result) && s_validate) {
+    ValidateOptions options(s_features);
+    result = ValidateModule(module.get(), &errors, options);
+  }
 
   if (Succeeded(result)) {
-    result = ResolveNamesModule(module.get(), &errors);
-
-    if (Succeeded(result) && s_validate) {
-      ValidateOptions options(s_features);
-      result = ValidateModule(module.get(), &errors, options);
-    }
+    MemoryStream stream(s_log_stream.get());
+    s_write_binary_options.features = s_features;
+    result = WriteBinaryModule(&stream, module.get(), s_write_binary_options);
 
     if (Succeeded(result)) {
-      MemoryStream stream(s_log_stream.get());
-      result = WriteBinaryModule(&stream, module.get(), s_write_binary_options);
-
-      if (Succeeded(result)) {
-        if (s_outfile.empty()) {
-          s_outfile = DefaultOuputName(s_infile);
-        }
-        WriteBufferToFile(s_outfile.c_str(), stream.output_buffer());
+      if (s_outfile.empty()) {
+        s_outfile = DefaultOuputName(s_infile);
       }
+      WriteBufferToFile(s_outfile.c_str(), stream.output_buffer());
     }
   }
 

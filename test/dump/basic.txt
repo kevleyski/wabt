@@ -10,18 +10,18 @@
     i32.const 1
     i32.add
     i32.store
-    get_local 0
-    get_local 1
+    local.get 0
+    local.get 1
     i32.add)
   (export "f" (func $f)))
-(;; STDOUT ;;;
+(;; STDERR ;;;
 0000000: 0061 736d                                 ; WASM_BINARY_MAGIC
 0000004: 0100 0000                                 ; WASM_BINARY_VERSION
 ; section "Type" (1)
 0000008: 01                                        ; section code
 0000009: 00                                        ; section size (guess)
 000000a: 01                                        ; num types
-; type 0
+; func type 0
 000000b: 60                                        ; func
 000000c: 02                                        ; num params
 000000d: 7f                                        ; i32
@@ -72,14 +72,16 @@
 0000030: 36                                        ; i32.store
 0000031: 02                                        ; alignment
 0000032: 00                                        ; store offset
-0000033: 20                                        ; get_local
+0000033: 20                                        ; local.get
 0000034: 00                                        ; local index
-0000035: 20                                        ; get_local
+0000035: 20                                        ; local.get
 0000036: 01                                        ; local index
 0000037: 6a                                        ; i32.add
 0000038: 0b                                        ; end
 0000024: 14                                        ; FIXUP func body size
 0000022: 16                                        ; FIXUP section size
+;;; STDERR ;;)
+(;; STDOUT ;;;
 
 basic.wasm:	file format wasm 0x1
 
@@ -93,15 +95,15 @@ Sections:
 
 Code Disassembly:
 
-000024 <f>:
+000025 func[0] <f>:
  000026: 41 00                      | i32.const 0
  000028: 41 00                      | i32.const 0
  00002a: 28 02 00                   | i32.load 2 0
  00002d: 41 01                      | i32.const 1
  00002f: 6a                         | i32.add
  000030: 36 02 00                   | i32.store 2 0
- 000033: 20 00                      | get_local 0
- 000035: 20 01                      | get_local 1
+ 000033: 20 00                      | local.get 0
+ 000035: 20 01                      | local.get 1
  000037: 6a                         | i32.add
  000038: 0b                         | end
 ;;; STDOUT ;;)

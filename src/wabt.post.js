@@ -16,6 +16,18 @@
 
 var WABT_OK = 0;
 var WABT_ERROR = 1;
+var FEATURES = [
+  'exceptions',
+  'mutable_globals',
+  'sat_float_to_int',
+  'sign_extension',
+  'simd',
+  'threads',
+  'multi_value',
+  'tail_call',
+  'bulk_memory',
+  'reference_types',
+];
 
 /// If value is not undefined, return it. Otherwise return default_.
 function maybeDefault(value, default_) {
@@ -70,6 +82,33 @@ function allocateCString(s) {
 }
 
 
+/// Features
+function Features(obj) {
+  this.addr = Module._wabt_new_features();
+  for (var i = 0; i < FEATURES.length; ++i) {
+    var feature = FEATURES[i];
+    this[feature] = obj[feature] | 0;
+  }
+}
+Features.prototype = Object.create(Object.prototype);
+
+Features.prototype.destroy = function() {
+  Module._wabt_destroy_features(this.addr);
+};
+
+FEATURES.forEach(function(feature) {
+  Object.defineProperty(Features.prototype, feature, {
+    enumerable: true,
+    get: function() {
+      return Module['_wabt_' + feature + '_enabled'](this.addr);
+    },
+    set: function(newValue) {
+      Module['_wabt_set_' + feature + '_enabled'](this.addr, newValue | 0);
+    }
+  });
+});
+
+
 /// Lexer
 function Lexer(filename, buffer) {
   this.filenameObj = allocateCString(filename);
@@ -111,7 +150,7 @@ OutputBuffer.prototype.toString = function() {
 
   var addr = Module._wabt_output_buffer_get_data(this.addr);
   var size = Module._wabt_output_buffer_get_size(this.addr);
-  return Pointer_stringify(addr, size);
+  return UTF8ToString(addr, size);
 };
 
 OutputBuffer.prototype.destroy = function() {
@@ -154,13 +193,14 @@ Errors.prototype.destroy = function() {
 
 
 /// parseWat
-function parseWat(filename, buffer) {
+function parseWat(filename, buffer, options) {
   var lexer = new Lexer(filename, buffer);
   var errors = new Errors('text', lexer);
+  var features = new Features(options || {});
 
   try {
     var parseResult_addr =
-        Module._wabt_parse_wat(lexer.addr, errors.addr);
+        Module._wabt_parse_wat(lexer.addr, features.addr, errors.addr);
 
     var result = Module._wabt_parse_wat_result_get_result(parseResult_addr);
     if (result !== WABT_OK) {
@@ -175,6 +215,7 @@ function parseWat(filename, buffer) {
     return result;
   } finally {
     Module._wabt_destroy_parse_wat_result(parseResult_addr);
+    features.destroy();
     if (errors) {
       errors.destroy();
     }
@@ -187,10 +228,12 @@ function readWasm(buffer, options) {
   var bufferObj = allocateBuffer(buffer);
   var errors = new Errors('binary');
   var readDebugNames = booleanOrDefault(options.readDebugNames, false);
+  var features = new Features(options);
 
   try {
     var readBinaryResult_addr = Module._wabt_read_binary(
-        bufferObj.addr, bufferObj.size, readDebugNames, errors.addr);
+        bufferObj.addr, bufferObj.size, readDebugNames, features.addr,
+        errors.addr);
 
     var result =
         Module._wabt_read_binary_result_get_result(readBinaryResult_addr);
@@ -206,6 +249,7 @@ function readWasm(buffer, options) {
     return result;
   } finally {
     Module._wabt_destroy_read_binary_result(readBinaryResult_addr);
+    features.destroy();
     if (errors) {
       errors.destroy();
     }
@@ -221,20 +265,21 @@ function WasmModule(module_addr, errors) {
 }
 WasmModule.prototype = Object.create(Object.prototype);
 
-WasmModule.prototype.validate = function() {
-  var result =
-      Module._wabt_validate_module(this.module_addr, this.errors.addr);
-  if (result !== WABT_OK) {
-    throw new Error('validate failed:\n' + this.errors.format());
+WasmModule.prototype.validate = function(options) {
+  var features = new Features(options || {});
+  try {
+    var result = Module._wabt_validate_module(
+        this.module_addr, features.addr, this.errors.addr);
+    if (result !== WABT_OK) {
+      throw new Error('validate failed:\n' + this.errors.format());
+    }
+  } finally {
+    features.destroy();
   }
 };
 
 WasmModule.prototype.resolveNames = function() {
-  var result =
-      Module._wabt_resolve_names_module(this.module_addr, this.errors.addr);
-  if (result !== WABT_OK) {
-    throw new Error('resolveNames failed:\n' + this.errors.format());
-  }
+  // No-op, this is now part of text parsing.
 };
 
 WasmModule.prototype.generateNames = function() {

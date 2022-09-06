@@ -14,26 +14,25 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from __future__ import print_function
 import argparse
 import hashlib
 import sys
 
 
 def main(args):
-  parser = argparse.ArgumentParser()
-  parser.add_argument('file', nargs='?')
-  options = parser.parse_args(args)
+    parser = argparse.ArgumentParser()
+    parser.add_argument('file', nargs='?')
+    options = parser.parse_args(args)
 
-  if options.file is None:
-    parser.error('Expected a file')
+    if options.file is None:
+        parser.error('Expected a file')
 
-  m = hashlib.sha256()
-  with open(options.file, 'rb') as f:
-    m.update(f.read())
-  print('%s  %s' % (m.hexdigest(), options.file))
-  return 0
+    m = hashlib.sha256()
+    with open(options.file, 'rb') as f:
+        m.update(f.read())
+    print('%s  %s' % (m.hexdigest(), options.file))
+    return 0
 
 
 if __name__ == '__main__':
-  sys.exit(main(sys.argv[1:]))
+    sys.exit(main(sys.argv[1:]))

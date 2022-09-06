@@ -17,14 +17,14 @@
 #include <cassert>
 #include <cstdarg>
 #include <cstdint>
-#include <cstdlib>
 #include <cstdio>
+#include <cstdlib>
 #include <string>
 
 #include "config.h"
 
-#include "src/binary-writer.h"
 #include "src/binary-writer-spec.h"
+#include "src/binary-writer.h"
 #include "src/common.h"
 #include "src/error-formatter.h"
 #include "src/feature.h"
@@ -39,7 +39,7 @@
 using namespace wabt;
 
 static const char* s_infile;
-static const char* s_outfile;
+static std::string s_outfile;
 static int s_verbose;
 static WriteBinaryOptions s_write_binary_options;
 static bool s_validate = true;
@@ -49,7 +49,7 @@ static Features s_features;
 static std::unique_ptr<FileStream> s_log_stream;
 
 static const char s_description[] =
-R"(  read a file in the wasm spec test format, check it for errors, and
+    R"(  read a file in the wasm spec test format, check it for errors, and
   convert it to a JSON file and associated wasm binary files.
 
 examples:
@@ -63,13 +63,12 @@ static void ParseOptions(int argc, char* argv[]) {
 
   parser.AddOption('v', "verbose", "Use multiple times for more info", []() {
     s_verbose++;
-    s_log_stream = FileStream::CreateStdout();
+    s_log_stream = FileStream::CreateStderr();
   });
-  parser.AddHelpOption();
   parser.AddOption("debug-parser", "Turn on debugging the parser of wast files",
                    []() { s_debug_parsing = true; });
   s_features.AddOptions(&parser);
-  parser.AddOption('o', "output", "FILE", "output wasm binary file",
+  parser.AddOption('o', "output", "FILE", "output JSON file",
                    [](const char* argument) { s_outfile = argument; });
   parser.AddOption(
       'r', "relocatable",
@@ -90,47 +89,61 @@ static void ParseOptions(int argc, char* argv[]) {
   parser.Parse(argc, argv);
 }
 
+static std::string DefaultOuputName(std::string_view input_name) {
+  // Strip existing extension and add .json
+  std::string result(StripExtension(GetBasename(input_name)));
+  result += ".json";
+
+  return result;
+}
+
 int ProgramMain(int argc, char** argv) {
   InitStdio();
 
   ParseOptions(argc, argv);
 
-  std::unique_ptr<WastLexer> lexer = WastLexer::CreateFileLexer(s_infile);
-  if (!lexer) {
+  std::vector<uint8_t> file_data;
+  Result result = ReadFile(s_infile, &file_data);
+  std::unique_ptr<WastLexer> lexer = WastLexer::CreateBufferLexer(
+      s_infile, file_data.data(), file_data.size());
+  if (Failed(result)) {
     WABT_FATAL("unable to read file: %s\n", s_infile);
   }
 
   Errors errors;
   std::unique_ptr<Script> script;
   WastParseOptions parse_wast_options(s_features);
-  Result result =
-      ParseWastScript(lexer.get(), &script, &errors, &parse_wast_options);
+  result = ParseWastScript(lexer.get(), &script, &errors, &parse_wast_options);
+
+  if (Succeeded(result) && s_validate) {
+    ValidateOptions options(s_features);
+    result = ValidateScript(script.get(), &errors, options);
+  }
 
   if (Succeeded(result)) {
-    result = ResolveNamesScript(script.get(), &errors);
+    if (s_outfile.empty()) {
+      s_outfile = DefaultOuputName(s_infile);
+    }
 
-    if (Succeeded(result) && s_validate) {
-      ValidateOptions options(s_features);
-      result = ValidateScript(script.get(), &errors, options);
+    std::vector<FilenameMemoryStreamPair> module_streams;
+    MemoryStream json_stream;
+
+    std::string output_basename(StripExtension(s_outfile));
+    s_write_binary_options.features = s_features;
+    result = WriteBinarySpecScript(&json_stream, script.get(), s_infile,
+                                   output_basename, s_write_binary_options,
+                                   &module_streams, s_log_stream.get());
+
+    if (Succeeded(result)) {
+      result = json_stream.WriteToFile(s_outfile);
     }
 
     if (Succeeded(result)) {
-      std::vector<FilenameMemoryStreamPair> module_streams;
-      MemoryStream json_stream;
-
-      std::string module_filename_noext =
-          StripExtension(s_outfile ? s_outfile : s_infile).to_string();
-      result = WriteBinarySpecScript(
-          &json_stream, script.get(), s_infile, module_filename_noext,
-          s_write_binary_options, &module_streams, s_log_stream.get());
-
-      if (s_outfile) {
-        json_stream.WriteToFile(s_outfile);
-      }
-
-      for (auto iter = module_streams.begin(); iter != module_streams.end();
-           ++iter) {
-        iter->stream->WriteToFile(iter->filename);
+      for (const auto& pair : module_streams) {
+        result = pair.stream->WriteToFile(pair.filename);
+        if (!Succeeded(result)) {
+          break;
+        }
       }
     }
   }

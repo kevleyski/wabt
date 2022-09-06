@@ -18,10 +18,10 @@
 #define WABT_ERROR_H_
 
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include "src/common.h"
-#include "src/string-view.h"
 
 namespace wabt {
 
@@ -42,8 +42,9 @@ static WABT_INLINE const char* GetErrorLevelName(ErrorLevel error_level) {
 
 class Error {
  public:
-  Error(ErrorLevel error_level, Location loc, string_view message)
-      : error_level(error_level), loc(loc), message(message.to_string()) {}
+  Error() : error_level(ErrorLevel::Error) {}
+  Error(ErrorLevel error_level, Location loc, std::string_view message)
+      : error_level(error_level), loc(loc), message(message) {}
 
   ErrorLevel error_level;
   Location loc;

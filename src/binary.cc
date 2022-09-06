@@ -18,10 +18,51 @@
 
 namespace wabt {
 
-const char* g_section_name[] = {
-#define V(NAME, name, code) #NAME,
+BinarySectionOrder GetSectionOrder(BinarySection sec) {
+  switch (sec) {
+#define V(Name, name, code) \
+  case BinarySection::Name: \
+    return BinarySectionOrder::Name;
     WABT_FOREACH_BINARY_SECTION(V)
 #undef V
+    default:
+      WABT_UNREACHABLE;
+  }
+}
+
+const char* GetSectionName(BinarySection sec) {
+  switch (sec) {
+#define V(Name, name, code) \
+  case BinarySection::Name: \
+    return #Name;
+    WABT_FOREACH_BINARY_SECTION(V)
+#undef V
+    default:
+      WABT_UNREACHABLE;
+  }
+}
+
+// clang-format off
+const char* NameSubsectionName[] = {
+    "module",
+    "function",
+    "local",
+    "label",
+    "type",
+    "table",
+    "memory",
+    "global",
+    "elemseg",
+    "dataseg",
+    "tag",
 };
+// clang-format on
+
+const char* GetNameSectionSubsectionName(NameSectionSubsection subsec) {
+  static_assert(WABT_ENUM_COUNT(NameSectionSubsection) ==
+                    WABT_ARRAY_SIZE(NameSubsectionName),
+                "Malformed ExprTypeName array");
+  return NameSubsectionName[size_t(subsec)];
+}
 
 }  // namespace wabt

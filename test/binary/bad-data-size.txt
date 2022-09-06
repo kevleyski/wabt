@@ -14,6 +14,5 @@ section(DATA) {
   data[str("overflow")]
 }
 (;; STDERR ;;;
-error: data segment is out of bounds: [0, 8) >= max value 0
-000001d: error: OnDataSegmentData callback failed
+error initializing module: out of bounds memory access: data segment is out of bounds: [0, 8) >= max value 0
 ;;; STDERR ;;)

@@ -25,48 +25,69 @@
 namespace {
 
 const char* ExprTypeName[] = {
-  "AtomicLoad",
-  "AtomicRmw",
-  "AtomicRmwCmpxchg",
-  "AtomicStore",
-  "AtomicWait",
-  "AtomicWake",
-  "Binary",
-  "Block",
-  "Br",
-  "BrIf",
-  "BrTable",
-  "Call",
-  "CallIndirect",
-  "Compare",
-  "Const",
-  "Convert",
-  "CurrentMemory",
-  "Drop",
-  "GetGlobal",
-  "GetLocal",
-  "GrowMemory",
-  "If",
-  "IfExcept",
-  "Load",
-  "Loop",
-  "Nop",
-  "Rethrow",
-  "Return",
-  "ReturnCall",
-  "ReturnCallIndirect",
-  "Select",
-  "SetGlobal",
-  "SetLocal",
-  "SimdLaneOp",
-  "SimdShuffleOp",
-  "Store",
-  "TeeLocal",
-  "Ternary",
-  "Throw",
-  "Try",
-  "Unary",
-  "Unreachable",
+    "AtomicFence",
+    "AtomicLoad",
+    "AtomicRmw",
+    "AtomicRmwCmpxchg",
+    "AtomicStore",
+    "AtomicNotify",
+    "AtomicWait",
+    "Binary",
+    "Block",
+    "Br",
+    "BrIf",
+    "BrTable",
+    "Call",
+    "CallIndirect",
+    "CallRef",
+    "CodeMetadata",
+    "Compare",
+    "Const",
+    "Convert",
+    "Drop",
+    "GlobalGet",
+    "GlobalSet",
+    "If",
+    "Load",
+    "LocalGet",
+    "LocalSet",
+    "LocalTee",
+    "Loop",
+    "MemoryCopy",
+    "DataDrop",
+    "MemoryFill",
+    "MemoryGrow",
+    "MemoryInit",
+    "MemorySize",
+    "Nop",
+    "RefIsNull",
+    "RefFunc",
+    "RefNull",
+    "Rethrow",
+    "Return",
+    "ReturnCall",
+    "ReturnCallIndirect",
+    "Select",
+    "SimdLaneOp",
+    "SimdLoadLane",
+    "SimdStoreLane",
+    "SimdShuffleOp",
+    "LoadSplat",
+    "LoadZero",
+    "Store",
+    "TableCopy",
+    "ElemDrop",
+    "TableInit",
+    "TableGet",
+    "TableGrow",
+    "TableSize",
+    "TableSet",
+    "TableFill",
+    "Ternary",
+    "Throw",
+    "Try",
+    "Unary",
+    "Unreachable",
 };
 
 }  // end of anonymous namespace
@@ -87,7 +108,7 @@ bool FuncSignature::operator==(const FuncSignature& rhs) const {
   return param_types == rhs.param_types && result_types == rhs.result_types;
 }
 
-const Export* Module::GetExport(string_view name) const {
+const Export* Module::GetExport(std::string_view name) const {
   Index index = export_bindings.FindIndex(name);
   if (index >= exports.size()) {
     return nullptr;
@@ -112,11 +133,19 @@ Index Module::GetMemoryIndex(const Var& var) const {
 }
 
 Index Module::GetFuncTypeIndex(const Var& var) const {
-  return func_type_bindings.FindIndex(var);
+  return type_bindings.FindIndex(var);
 }
 
-Index Module::GetExceptIndex(const Var& var) const {
-  return except_bindings.FindIndex(var);
+Index Module::GetTagIndex(const Var& var) const {
+  return tag_bindings.FindIndex(var);
+}
+
+Index Module::GetDataSegmentIndex(const Var& var) const {
+  return data_segment_bindings.FindIndex(var);
+}
+
+Index Module::GetElemSegmentIndex(const Var& var) const {
+  return elem_segment_bindings.FindIndex(var);
 }
 
 bool Module::IsImport(ExternalKind kind, const Var& var) const {
@@ -133,8 +162,8 @@ bool Module::IsImport(ExternalKind kind, const Var& var) const {
     case ExternalKind::Table:
       return GetTableIndex(var) < num_table_imports;
 
-    case ExternalKind::Except:
-      return GetExceptIndex(var) < num_except_imports;
+    case ExternalKind::Tag:
+      return GetTagIndex(var) < num_tag_imports;
 
     default:
       return false;
@@ -169,7 +198,7 @@ Index LocalTypes::size() const {
 
 Type LocalTypes::operator[](Index i) const {
   Index count = 0;
-  for (auto decl: decls_) {
+  for (auto decl : decls_) {
     if (i < count + decl.second) {
       return decl.first;
     }
@@ -198,19 +227,7 @@ Index Func::GetLocalIndex(const Var& var) const {
   if (var.is_index()) {
     return var.index();
   }
-
-  Index result = param_bindings.FindIndex(var);
-  if (result != kInvalidIndex) {
-    return result;
-  }
-
-  result = local_bindings.FindIndex(var);
-  if (result == kInvalidIndex) {
-    return result;
-  }
-
-  // The locals start after all the params.
-  return decl.GetNumParams() + result;
+  return bindings.FindIndex(var);
 }
 
 const Func* Module::GetFunc(const Var& var) const {
@@ -261,12 +278,36 @@ Memory* Module::GetMemory(const Var& var) {
   return memories[index];
 }
 
-Exception* Module::GetExcept(const Var& var) const {
-  Index index = GetExceptIndex(var);
-  if (index >= excepts.size()) {
+Tag* Module::GetTag(const Var& var) const {
+  Index index = GetTagIndex(var);
+  if (index >= tags.size()) {
     return nullptr;
   }
-  return excepts[index];
+  return tags[index];
+}
+
+const DataSegment* Module::GetDataSegment(const Var& var) const {
+  return const_cast<Module*>(this)->GetDataSegment(var);
+}
+
+DataSegment* Module::GetDataSegment(const Var& var) {
+  Index index = data_segment_bindings.FindIndex(var);
+  if (index >= data_segments.size()) {
+    return nullptr;
+  }
+  return data_segments[index];
+}
+
+const ElemSegment* Module::GetElemSegment(const Var& var) const {
+  return const_cast<Module*>(this)->GetElemSegment(var);
+}
+
+ElemSegment* Module::GetElemSegment(const Var& var) {
+  Index index = elem_segment_bindings.FindIndex(var);
+  if (index >= elem_segments.size()) {
+    return nullptr;
+  }
+  return elem_segments[index];
 }
 
 const FuncType* Module::GetFuncType(const Var& var) const {
@@ -274,17 +315,19 @@ const FuncType* Module::GetFuncType(const Var& var) const {
 }
 
 FuncType* Module::GetFuncType(const Var& var) {
-  Index index = func_type_bindings.FindIndex(var);
-  if (index >= func_types.size()) {
+  Index index = type_bindings.FindIndex(var);
+  if (index >= types.size()) {
     return nullptr;
   }
-  return func_types[index];
+  return dyn_cast<FuncType>(types[index]);
 }
 
 Index Module::GetFuncTypeIndex(const FuncSignature& sig) const {
-  for (size_t i = 0; i < func_types.size(); ++i) {
-    if (func_types[i]->sig == sig) {
-      return i;
+  for (size_t i = 0; i < types.size(); ++i) {
+    if (auto* func_type = dyn_cast<FuncType>(types[i])) {
+      if (func_type->sig == sig) {
+        return i;
+      }
     }
   }
   return kInvalidIndex;
@@ -299,21 +342,31 @@ Index Module::GetFuncTypeIndex(const FuncDeclaration& decl) const {
 }
 
 void Module::AppendField(std::unique_ptr<DataSegmentModuleField> field) {
-  data_segments.push_back(&field->data_segment);
+  DataSegment& data_segment = field->data_segment;
+  if (!data_segment.name.empty()) {
+    data_segment_bindings.emplace(data_segment.name,
+                                  Binding(field->loc, data_segments.size()));
+  }
+  data_segments.push_back(&data_segment);
   fields.push_back(std::move(field));
 }
 
 void Module::AppendField(std::unique_ptr<ElemSegmentModuleField> field) {
-  elem_segments.push_back(&field->elem_segment);
+  ElemSegment& elem_segment = field->elem_segment;
+  if (!elem_segment.name.empty()) {
+    elem_segment_bindings.emplace(elem_segment.name,
+                                  Binding(field->loc, elem_segments.size()));
+  }
+  elem_segments.push_back(&elem_segment);
   fields.push_back(std::move(field));
 }
 
-void Module::AppendField(std::unique_ptr<ExceptionModuleField> field) {
-  Exception& except = field->except;
-  if (!except.name.empty()) {
-    except_bindings.emplace(except.name, Binding(field->loc, excepts.size()));
+void Module::AppendField(std::unique_ptr<TagModuleField> field) {
+  Tag& tag = field->tag;
+  if (!tag.name.empty()) {
+    tag_bindings.emplace(tag.name, Binding(field->loc, tags.size()));
   }
-  excepts.push_back(&except);
+  tags.push_back(&tag);
   fields.push_back(std::move(field));
 }
 
@@ -334,13 +387,12 @@ void Module::AppendField(std::unique_ptr<FuncModuleField> field) {
   fields.push_back(std::move(field));
 }
 
-void Module::AppendField(std::unique_ptr<FuncTypeModuleField> field) {
-  FuncType& func_type = field->func_type;
-  if (!func_type.name.empty()) {
-    func_type_bindings.emplace(func_type.name,
-                               Binding(field->loc, func_types.size()));
+void Module::AppendField(std::unique_ptr<TypeModuleField> field) {
+  TypeEntry& type = *field->type;
+  if (!type.name.empty()) {
+    type_bindings.emplace(type.name, Binding(field->loc, types.size()));
   }
-  func_types.push_back(&func_type);
+  types.push_back(&type);
   fields.push_back(std::move(field));
 }
 
@@ -400,13 +452,13 @@ void Module::AppendField(std::unique_ptr<ImportModuleField> field) {
       break;
     }
 
-    case ExternalKind::Except: {
-      Exception& except = cast<ExceptionImport>(import)->except;
-      name = &except.name;
-      bindings = &except_bindings;
-      index = excepts.size();
-      excepts.push_back(&except);
-      ++num_except_imports;
+    case ExternalKind::Tag: {
+      Tag& tag = cast<TagImport>(import)->tag;
+      name = &tag.name;
+      bindings = &tag_bindings;
+      index = tags.size();
+      tags.push_back(&tag);
+      ++num_tag_imports;
       break;
     }
   }
@@ -460,8 +512,8 @@ void Module::AppendField(std::unique_ptr<ModuleField> field) {
       AppendField(cast<ExportModuleField>(std::move(field)));
       break;
 
-    case ModuleFieldType::FuncType:
-      AppendField(cast<FuncTypeModuleField>(std::move(field)));
+    case ModuleFieldType::Type:
+      AppendField(cast<TypeModuleField>(std::move(field)));
       break;
 
     case ModuleFieldType::Table:
@@ -484,8 +536,8 @@ void Module::AppendField(std::unique_ptr<ModuleField> field) {
       AppendField(cast<StartModuleField>(std::move(field)));
       break;
 
-    case ModuleFieldType::Except:
-      AppendField(cast<ExceptionModuleField>(std::move(field)));
+    case ModuleFieldType::Tag:
+      AppendField(cast<TagModuleField>(std::move(field)));
       break;
   }
 }
@@ -513,8 +565,13 @@ const Module* Script::GetModule(const Var& var) const {
   if (index >= commands.size()) {
     return nullptr;
   }
-  auto* command = cast<ModuleCommand>(commands[index].get());
-  return &command->module;
+  auto* command = commands[index].get();
+  if (isa<ModuleCommand>(command)) {
+    return &cast<ModuleCommand>(command)->module;
+  } else if (isa<ScriptModuleCommand>(command)) {
+    return &cast<ScriptModuleCommand>(command)->module;
+  }
+  return nullptr;
 }
 
 void MakeTypeBindingReverseMapping(
@@ -523,24 +580,25 @@ void MakeTypeBindingReverseMapping(
     std::vector<std::string>* out_reverse_mapping) {
   out_reverse_mapping->clear();
   out_reverse_mapping->resize(num_types);
-  for (const auto& pair : bindings) {
-    assert(static_cast<size_t>(pair.second.index) <
-           out_reverse_mapping->size());
-    (*out_reverse_mapping)[pair.second.index] = pair.first;
+  for (const auto& [name, binding] : bindings) {
+    assert(static_cast<size_t>(binding.index) < out_reverse_mapping->size());
+    (*out_reverse_mapping)[binding.index] = name;
   }
 }
+
+Var::Var() : Var(kInvalidIndex, Location()) {}
 
 Var::Var(Index index, const Location& loc)
     : loc(loc), type_(VarType::Index), index_(index) {}
 
-Var::Var(string_view name, const Location& loc)
+Var::Var(std::string_view name, const Location& loc)
     : loc(loc), type_(VarType::Name), name_(name) {}
 
-Var::Var(Var&& rhs) : Var(kInvalidIndex) {
+Var::Var(Var&& rhs) : Var() {
   *this = std::move(rhs);
 }
 
-Var::Var(const Var& rhs) : Var(kInvalidIndex) {
+Var::Var(const Var& rhs) : Var() {
   *this = rhs;
 }
 
@@ -580,8 +638,8 @@ void Var::set_name(std::string&& name) {
   Construct(name_, std::move(name));
 }
 
-void Var::set_name(string_view name) {
-  set_name(name.to_string());
+void Var::set_name(std::string_view name) {
+  set_name(std::string(name));
 }
 
 void Var::Destroy() {
@@ -590,19 +648,55 @@ void Var::Destroy() {
   }
 }
 
-Const::Const(I32Tag, uint32_t value, const Location& loc_)
-    : loc(loc_), type(Type::I32), u32(value) {}
+uint8_t ElemSegment::GetFlags(const Module* module) const {
+  uint8_t flags = 0;
 
-Const::Const(I64Tag, uint64_t value, const Location& loc_)
-    : loc(loc_), type(Type::I64), u64(value) {}
+  bool all_ref_func = elem_type == Type::FuncRef;
 
-Const::Const(F32Tag, uint32_t value, const Location& loc_)
-    : loc(loc_), type(Type::F32), f32_bits(value) {}
+  switch (kind) {
+    case SegmentKind::Active: {
+      Index table_index = module->GetTableIndex(table_var);
+      if (table_index != 0) {
+        flags |= SegExplicitIndex;
+      }
+      break;
+    }
 
-Const::Const(F64Tag, uint64_t value, const Location& loc_)
-    : loc(loc_), type(Type::F64), f64_bits(value) {}
+    case SegmentKind::Passive:
+      flags |= SegPassive;
+      break;
 
-Const::Const(V128Tag, v128 value, const Location& loc_)
-    : loc(loc_), type(Type::V128), v128_bits(value) {}
+    case SegmentKind::Declared:
+      flags |= SegDeclared;
+      break;
+  }
+
+  all_ref_func =
+      all_ref_func &&
+      std::all_of(elem_exprs.begin(), elem_exprs.end(),
+                  [](const ExprList& elem_expr) {
+                    return elem_expr.front().type() == ExprType::RefFunc;
+                  });
+  if (!all_ref_func) {
+    flags |= SegUseElemExprs;
+  }
+
+  return flags;
+}
+
+uint8_t DataSegment::GetFlags(const Module* module) const {
+  uint8_t flags = 0;
+
+  if (kind == SegmentKind::Passive) {
+    flags |= SegPassive;
+  }
+
+  Index memory_index = module->GetMemoryIndex(memory_var);
+  if (memory_index != 0) {
+    flags |= SegExplicitIndex;
+  }
+
+  return flags;
+}
 
 }  // namespace wabt

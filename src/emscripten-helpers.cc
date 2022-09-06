@@ -32,10 +32,10 @@
 #include "src/binary-writer.h"
 #include "src/common.h"
 #include "src/error-formatter.h"
+#include "src/feature.h"
 #include "src/filenames.h"
 #include "src/generate-names.h"
 #include "src/ir.h"
-#include "src/resolve-names.h"
 #include "src/stream.h"
 #include "src/validator.h"
 #include "src/wast-lexer.h"
@@ -76,6 +76,24 @@ struct WabtParseWastResult {
 
 extern "C" {
 
+wabt::Features* wabt_new_features(void) {
+  return new wabt::Features();
+}
+
+void wabt_destroy_features(wabt::Features* f) {
+  delete f;
+}
+
+#define WABT_FEATURE(variable, flag, default_, help)                   \
+  bool wabt_##variable##_enabled(wabt::Features* f) {                  \
+    return f->variable##_enabled();                                    \
+  }                                                                    \
+  void wabt_set_##variable##_enabled(wabt::Features* f, int enabled) { \
+    f->set_##variable##_enabled(enabled);                              \
+  }
+#include "src/feature.def"
+#undef WABT_FEATURE
+
 wabt::WastLexer* wabt_new_wast_buffer_lexer(const char* filename,
                                             const void* data,
                                             size_t size) {
@@ -85,19 +103,23 @@ wabt::WastLexer* wabt_new_wast_buffer_lexer(const char* filename,
 }
 
 WabtParseWatResult* wabt_parse_wat(wabt::WastLexer* lexer,
+                                   wabt::Features* features,
                                    wabt::Errors* errors) {
+  wabt::WastParseOptions options(*features);
   WabtParseWatResult* result = new WabtParseWatResult();
   std::unique_ptr<wabt::Module> module;
-  result->result = wabt::ParseWatModule(lexer, &module, errors);
+  result->result = wabt::ParseWatModule(lexer, &module, errors, &options);
   result->module = std::move(module);
   return result;
 }
 
 WabtParseWastResult* wabt_parse_wast(wabt::WastLexer* lexer,
+                                     wabt::Features* features,
                                      wabt::Errors* errors) {
+  wabt::WastParseOptions options(*features);
   WabtParseWastResult* result = new WabtParseWastResult();
   std::unique_ptr<wabt::Script> script;
-  result->result = wabt::ParseWastScript(lexer, &script, errors);
+  result->result = wabt::ParseWastScript(lexer, &script, errors, &options);
   result->script = std::move(script);
   return result;
 }
@@ -105,8 +127,10 @@ WabtParseWastResult* wabt_parse_wast(wabt::WastLexer* lexer,
 WabtReadBinaryResult* wabt_read_binary(const void* data,
                                        size_t size,
                                        int read_debug_names,
+                                       wabt::Features* features,
                                        wabt::Errors* errors) {
   wabt::ReadBinaryOptions options;
+  options.features = *features;
   options.read_debug_names = read_debug_names;
 
   WabtReadBinaryResult* result = new WabtReadBinaryResult();
@@ -119,20 +143,19 @@ WabtReadBinaryResult* wabt_read_binary(const void* data,
   return result;
 }
 
-wabt::Result::Enum wabt_resolve_names_module(wabt::Module* module,
-                                             wabt::Errors* errors) {
-  return ResolveNamesModule(module, errors);
-}
-
 wabt::Result::Enum wabt_validate_module(wabt::Module* module,
+                                        wabt::Features* features,
                                         wabt::Errors* errors) {
   wabt::ValidateOptions options;
+  options.features = *features;
   return ValidateModule(module, errors, options);
 }
 
 wabt::Result::Enum wabt_validate_script(wabt::Script* script,
+                                        wabt::Features* features,
                                         wabt::Errors* errors) {
   wabt::ValidateOptions options;
+  options.features = *features;
   return ValidateScript(script, errors, options);
 }
 
@@ -155,9 +178,8 @@ WabtWriteScriptResult* wabt_write_binary_spec_script(
   std::vector<wabt::FilenameMemoryStreamPair> module_streams;
   wabt::MemoryStream json_stream(log_stream_p);
 
-  std::string module_filename_noext =
-      wabt::StripExtension(out_filename ? out_filename : source_filename)
-          .to_string();
+  std::string module_filename_noext(
+      wabt::StripExtension(out_filename ? out_filename : source_filename));
 
   WabtWriteScriptResult* result = new WabtWriteScriptResult();
   result->result = WriteBinarySpecScript(&json_stream, script, source_filename,
@@ -374,6 +396,9 @@ size_t wabt_output_buffer_get_size(wabt::OutputBuffer* output_buffer) {
 void wabt_destroy_output_buffer(wabt::OutputBuffer* output_buffer) {
   delete output_buffer;
 }
+
+// See https://github.com/kripken/emscripten/issues/7073.
+void dummy_workaround_for_emscripten_issue_7073(void) {}
 
 }  // extern "C"
 

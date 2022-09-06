@@ -19,13 +19,13 @@
 
 #include <stddef.h>
 #include <stdint.h>
+#include <string_view>
 
 #include "src/binary.h"
 #include "src/common.h"
 #include "src/error.h"
 #include "src/feature.h"
 #include "src/opcode.h"
-#include "src/string-view.h"
 
 namespace wabt {
 
@@ -49,7 +49,15 @@ struct ReadBinaryOptions {
   bool read_debug_names = false;
   bool stop_on_first_error = true;
   bool fail_on_custom_section_error = true;
+  bool skip_function_bodies = false;
 };
+
+// TODO: Move somewhere else?
+struct TypeMut {
+  Type type;
+  bool mutable_;
+};
+using TypeMutVector = std::vector<TypeMut>;
 
 class BinaryReaderDelegate {
  public:
@@ -71,55 +79,64 @@ class BinaryReaderDelegate {
   virtual Result BeginModule(uint32_t version) = 0;
   virtual Result EndModule() = 0;
 
-  virtual Result BeginSection(BinarySection section_type, Offset size) = 0;
+  virtual Result BeginSection(Index section_index,
+                              BinarySection section_type,
+                              Offset size) = 0;
 
   /* Custom section */
-  virtual Result BeginCustomSection(Offset size, string_view section_name) = 0;
+  virtual Result BeginCustomSection(Index section_index,
+                                    Offset size,
+                                    std::string_view section_name) = 0;
   virtual Result EndCustomSection() = 0;
 
   /* Type section */
   virtual Result BeginTypeSection(Offset size) = 0;
   virtual Result OnTypeCount(Index count) = 0;
-  virtual Result OnType(Index index,
-                        Index param_count,
-                        Type* param_types,
-                        Index result_count,
-                        Type* result_types) = 0;
+  virtual Result OnFuncType(Index index,
+                            Index param_count,
+                            Type* param_types,
+                            Index result_count,
+                            Type* result_types) = 0;
+  virtual Result OnStructType(Index index,
+                              Index field_count,
+                              TypeMut* fields) = 0;
+  virtual Result OnArrayType(Index index, TypeMut field) = 0;
   virtual Result EndTypeSection() = 0;
 
   /* Import section */
   virtual Result BeginImportSection(Offset size) = 0;
   virtual Result OnImportCount(Index count) = 0;
   virtual Result OnImport(Index index,
-                          string_view module_name,
-                          string_view field_name) = 0;
+                          ExternalKind kind,
+                          std::string_view module_name,
+                          std::string_view field_name) = 0;
   virtual Result OnImportFunc(Index import_index,
-                              string_view module_name,
-                              string_view field_name,
+                              std::string_view module_name,
+                              std::string_view field_name,
                               Index func_index,
                               Index sig_index) = 0;
   virtual Result OnImportTable(Index import_index,
-                               string_view module_name,
-                               string_view field_name,
+                               std::string_view module_name,
+                               std::string_view field_name,
                                Index table_index,
                                Type elem_type,
                                const Limits* elem_limits) = 0;
   virtual Result OnImportMemory(Index import_index,
-                                string_view module_name,
-                                string_view field_name,
+                                std::string_view module_name,
+                                std::string_view field_name,
                                 Index memory_index,
                                 const Limits* page_limits) = 0;
   virtual Result OnImportGlobal(Index import_index,
-                                string_view module_name,
-                                string_view field_name,
+                                std::string_view module_name,
+                                std::string_view field_name,
                                 Index global_index,
                                 Type type,
                                 bool mutable_) = 0;
-  virtual Result OnImportException(Index import_index,
-                                   string_view module_name,
-                                   string_view field_name,
-                                   Index except_index,
-                                   TypeVector& sig) = 0;
+  virtual Result OnImportTag(Index import_index,
+                             std::string_view module_name,
+                             std::string_view field_name,
+                             Index tag_index,
+                             Index sig_index) = 0;
   virtual Result EndImportSection() = 0;
 
   /* Function section */
@@ -157,7 +174,7 @@ class BinaryReaderDelegate {
   virtual Result OnExport(Index index,
                           ExternalKind kind,
                           Index item_index,
-                          string_view name) = 0;
+                          std::string_view name) = 0;
   virtual Result EndExportSection() = 0;
 
   /* Start section */
@@ -168,7 +185,7 @@ class BinaryReaderDelegate {
   /* Code section */
   virtual Result BeginCodeSection(Offset size) = 0;
   virtual Result OnFunctionBodyCount(Index count) = 0;
-  virtual Result BeginFunctionBody(Index index) = 0;
+  virtual Result BeginFunctionBody(Index index, Offset size) = 0;
   virtual Result OnLocalDeclCount(Index count) = 0;
   virtual Result OnLocalDecl(Index decl_index, Index count, Type type) = 0;
 
@@ -178,30 +195,46 @@ class BinaryReaderDelegate {
   virtual Result OnOpcodeBare() = 0;
   virtual Result OnOpcodeUint32(uint32_t value) = 0;
   virtual Result OnOpcodeIndex(Index value) = 0;
+  virtual Result OnOpcodeIndexIndex(Index value, Index value2) = 0;
   virtual Result OnOpcodeUint32Uint32(uint32_t value, uint32_t value2) = 0;
+  virtual Result OnOpcodeUint32Uint32Uint32(uint32_t value,
+                                            uint32_t value2,
+                                            uint32_t value3) = 0;
+  virtual Result OnOpcodeUint32Uint32Uint32Uint32(uint32_t value,
+                                                  uint32_t value2,
+                                                  uint32_t value3,
+                                                  uint32_t value4) = 0;
   virtual Result OnOpcodeUint64(uint64_t value) = 0;
   virtual Result OnOpcodeF32(uint32_t value) = 0;
   virtual Result OnOpcodeF64(uint64_t value) = 0;
   virtual Result OnOpcodeV128(v128 value) = 0;
   virtual Result OnOpcodeBlockSig(Type sig_type) = 0;
+  virtual Result OnOpcodeType(Type type) = 0;
   virtual Result OnAtomicLoadExpr(Opcode opcode,
-                                  uint32_t alignment_log2,
+                                  Index memidx,
+                                  Address alignment_log2,
                                   Address offset) = 0;
   virtual Result OnAtomicStoreExpr(Opcode opcode,
-                                   uint32_t alignment_log2,
+                                   Index memidx,
+                                   Address alignment_log2,
                                    Address offset) = 0;
   virtual Result OnAtomicRmwExpr(Opcode opcode,
-                                 uint32_t alignment_log2,
+                                 Index memidx,
+                                 Address alignment_log2,
                                  Address offset) = 0;
   virtual Result OnAtomicRmwCmpxchgExpr(Opcode opcode,
-                                        uint32_t alignment_log2,
+                                        Index memidx,
+                                        Address alignment_log2,
                                         Address offset) = 0;
   virtual Result OnAtomicWaitExpr(Opcode opcode,
-                                  uint32_t alignment_log2,
+                                  Index memidx,
+                                  Address alignment_log2,
                                   Address offset) = 0;
-  virtual Result OnAtomicWakeExpr(Opcode opcode,
-                                  uint32_t alignment_log2,
-                                  Address offset) = 0;
+  virtual Result OnAtomicFenceExpr(uint32_t consistency_model) = 0;
+  virtual Result OnAtomicNotifyExpr(Opcode opcode,
+                                    Index memidx,
+                                    Address alignment_log2,
+                                    Address offset) = 0;
   virtual Result OnBinaryExpr(Opcode opcode) = 0;
   virtual Result OnBlockExpr(Type sig_type) = 0;
   virtual Result OnBrExpr(Index depth) = 0;
@@ -210,40 +243,61 @@ class BinaryReaderDelegate {
                                Index* target_depths,
                                Index default_target_depth) = 0;
   virtual Result OnCallExpr(Index func_index) = 0;
-  virtual Result OnCallIndirectExpr(Index sig_index) = 0;
-  virtual Result OnCatchExpr() = 0;
+  virtual Result OnCallIndirectExpr(Index sig_index, Index table_index) = 0;
+  virtual Result OnCallRefExpr() = 0;
+  virtual Result OnCatchExpr(Index tag_index) = 0;
+  virtual Result OnCatchAllExpr() = 0;
   virtual Result OnCompareExpr(Opcode opcode) = 0;
   virtual Result OnConvertExpr(Opcode opcode) = 0;
+  virtual Result OnDelegateExpr(Index depth) = 0;
   virtual Result OnDropExpr() = 0;
   virtual Result OnElseExpr() = 0;
   virtual Result OnEndExpr() = 0;
-  virtual Result OnEndFunc() = 0;
   virtual Result OnF32ConstExpr(uint32_t value_bits) = 0;
   virtual Result OnF64ConstExpr(uint64_t value_bits) = 0;
   virtual Result OnV128ConstExpr(v128 value_bits) = 0;
-  virtual Result OnGetGlobalExpr(Index global_index) = 0;
-  virtual Result OnGetLocalExpr(Index local_index) = 0;
+  virtual Result OnGlobalGetExpr(Index global_index) = 0;
+  virtual Result OnGlobalSetExpr(Index global_index) = 0;
   virtual Result OnI32ConstExpr(uint32_t value) = 0;
   virtual Result OnI64ConstExpr(uint64_t value) = 0;
   virtual Result OnIfExpr(Type sig_type) = 0;
-  virtual Result OnIfExceptExpr(Type sig_type, Index except_index) = 0;
   virtual Result OnLoadExpr(Opcode opcode,
-                            uint32_t alignment_log2,
+                            Index memidx,
+                            Address alignment_log2,
                             Address offset) = 0;
+  virtual Result OnLocalGetExpr(Index local_index) = 0;
+  virtual Result OnLocalSetExpr(Index local_index) = 0;
+  virtual Result OnLocalTeeExpr(Index local_index) = 0;
   virtual Result OnLoopExpr(Type sig_type) = 0;
-  virtual Result OnMemoryGrowExpr() = 0;
-  virtual Result OnMemorySizeExpr() = 0;
+  virtual Result OnMemoryCopyExpr(Index srcmemidx, Index destmemidx) = 0;
+  virtual Result OnDataDropExpr(Index segment_index) = 0;
+  virtual Result OnMemoryFillExpr(Index memidx) = 0;
+  virtual Result OnMemoryGrowExpr(Index memidx) = 0;
+  virtual Result OnMemoryInitExpr(Index segment_index, Index memidx) = 0;
+  virtual Result OnMemorySizeExpr(Index memidx) = 0;
+  virtual Result OnTableCopyExpr(Index dst_index, Index src_index) = 0;
+  virtual Result OnElemDropExpr(Index segment_index) = 0;
+  virtual Result OnTableInitExpr(Index segment_index, Index table_index) = 0;
+  virtual Result OnTableGetExpr(Index table_index) = 0;
+  virtual Result OnTableSetExpr(Index table_index) = 0;
+  virtual Result OnTableGrowExpr(Index table_index) = 0;
+  virtual Result OnTableSizeExpr(Index table_index) = 0;
+  virtual Result OnTableFillExpr(Index table_index) = 0;
+  virtual Result OnRefFuncExpr(Index func_index) = 0;
+  virtual Result OnRefNullExpr(Type type) = 0;
+  virtual Result OnRefIsNullExpr() = 0;
   virtual Result OnNopExpr() = 0;
-  virtual Result OnRethrowExpr() = 0;
+  virtual Result OnRethrowExpr(Index depth) = 0;
   virtual Result OnReturnExpr() = 0;
-  virtual Result OnSelectExpr() = 0;
-  virtual Result OnSetGlobalExpr(Index global_index) = 0;
-  virtual Result OnSetLocalExpr(Index local_index) = 0;
+  virtual Result OnReturnCallExpr(Index func_index) = 0;
+  virtual Result OnReturnCallIndirectExpr(Index sig_index,
+                                          Index table_index) = 0;
+  virtual Result OnSelectExpr(Index result_count, Type* result_types) = 0;
   virtual Result OnStoreExpr(Opcode opcode,
-                             uint32_t alignment_log2,
+                             Index memidx,
+                             Address alignment_log2,
                              Address offset) = 0;
-  virtual Result OnTeeLocalExpr(Index local_index) = 0;
-  virtual Result OnThrowExpr(Index except_index) = 0;
+  virtual Result OnThrowExpr(Index tag_index) = 0;
   virtual Result OnTryExpr(Type sig_type) = 0;
 
   virtual Result OnUnaryExpr(Opcode opcode) = 0;
@@ -255,23 +309,49 @@ class BinaryReaderDelegate {
   /* Simd instructions with Lane Imm operand*/
   virtual Result OnSimdLaneOpExpr(Opcode opcode, uint64_t value) = 0;
   virtual Result OnSimdShuffleOpExpr(Opcode opcode, v128 value) = 0;
+  virtual Result OnSimdLoadLaneExpr(Opcode opcode,
+                                    Index memidx,
+                                    Address alignment_log2,
+                                    Address offset,
+                                    uint64_t value) = 0;
+  virtual Result OnSimdStoreLaneExpr(Opcode opcode,
+                                     Index memidx,
+                                     Address alignment_log2,
+                                     Address offset,
+                                     uint64_t value) = 0;
+
+  virtual Result OnLoadSplatExpr(Opcode opcode,
+                                 Index memidx,
+                                 Address alignment_log2,
+                                 Address offset) = 0;
+  virtual Result OnLoadZeroExpr(Opcode opcode,
+                                Index memidx,
+                                Address alignment_log2,
+                                Address offset) = 0;
 
   /* Elem section */
   virtual Result BeginElemSection(Offset size) = 0;
   virtual Result OnElemSegmentCount(Index count) = 0;
-  virtual Result BeginElemSegment(Index index, Index table_index) = 0;
+  virtual Result BeginElemSegment(Index index,
+                                  Index table_index,
+                                  uint8_t flags) = 0;
   virtual Result BeginElemSegmentInitExpr(Index index) = 0;
   virtual Result EndElemSegmentInitExpr(Index index) = 0;
-  virtual Result OnElemSegmentFunctionIndexCount(Index index, Index count) = 0;
-  virtual Result OnElemSegmentFunctionIndex(Index segment_index,
-                                            Index func_index) = 0;
+  virtual Result OnElemSegmentElemType(Index index, Type elem_type) = 0;
+  virtual Result OnElemSegmentElemExprCount(Index index, Index count) = 0;
+  virtual Result OnElemSegmentElemExpr_RefNull(Index segment_index,
+                                               Type type) = 0;
+  virtual Result OnElemSegmentElemExpr_RefFunc(Index segment_index,
+                                               Index func_index) = 0;
   virtual Result EndElemSegment(Index index) = 0;
   virtual Result EndElemSection() = 0;
 
   /* Data section */
   virtual Result BeginDataSection(Offset size) = 0;
   virtual Result OnDataSegmentCount(Index count) = 0;
-  virtual Result BeginDataSegment(Index index, Index memory_index) = 0;
+  virtual Result BeginDataSegment(Index index,
+                                  Index memory_index,
+                                  uint8_t flags) = 0;
   virtual Result BeginDataSegmentInitExpr(Index index) = 0;
   virtual Result EndDataSegmentInitExpr(Index index) = 0;
   virtual Result OnDataSegmentData(Index index,
@@ -280,18 +360,23 @@ class BinaryReaderDelegate {
   virtual Result EndDataSegment(Index index) = 0;
   virtual Result EndDataSection() = 0;
 
+  /* DataCount section */
+  virtual Result BeginDataCountSection(Offset size) = 0;
+  virtual Result OnDataCount(Index count) = 0;
+  virtual Result EndDataCountSection() = 0;
+
   /* Names section */
   virtual Result BeginNamesSection(Offset size) = 0;
   virtual Result OnModuleNameSubsection(Index index,
                                         uint32_t name_type,
                                         Offset subsection_size) = 0;
-  virtual Result OnModuleName(string_view name) = 0;
+  virtual Result OnModuleName(std::string_view name) = 0;
   virtual Result OnFunctionNameSubsection(Index index,
                                           uint32_t name_type,
                                           Offset subsection_size) = 0;
   virtual Result OnFunctionNamesCount(Index num_functions) = 0;
   virtual Result OnFunctionName(Index function_index,
-                                string_view function_name) = 0;
+                                std::string_view function_name) = 0;
   virtual Result OnLocalNameSubsection(Index index,
                                        uint32_t name_type,
                                        Offset subsection_size) = 0;
@@ -300,63 +385,104 @@ class BinaryReaderDelegate {
                                        Index num_locals) = 0;
   virtual Result OnLocalName(Index function_index,
                              Index local_index,
-                             string_view local_name) = 0;
+                             std::string_view local_name) = 0;
+  virtual Result OnNameSubsection(Index index,
+                                  NameSectionSubsection subsection_type,
+                                  Offset subsection_size) = 0;
+  virtual Result OnNameCount(Index num_names) = 0;
+  virtual Result OnNameEntry(NameSectionSubsection type,
+                             Index index,
+                             std::string_view name) = 0;
   virtual Result EndNamesSection() = 0;
 
   /* Reloc section */
   virtual Result BeginRelocSection(Offset size) = 0;
-  virtual Result OnRelocCount(Index count,
-                              Index section_index) = 0;
+  virtual Result OnRelocCount(Index count, Index section_index) = 0;
   virtual Result OnReloc(RelocType type,
                          Offset offset,
                          Index index,
                          uint32_t addend) = 0;
   virtual Result EndRelocSection() = 0;
 
+  /* Dylink section */
+  virtual Result BeginDylinkSection(Offset size) = 0;
+  virtual Result OnDylinkInfo(uint32_t mem_size,
+                              uint32_t mem_align_log2,
+                              uint32_t table_size,
+                              uint32_t table_align_log2) = 0;
+  virtual Result OnDylinkImportCount(Index count) = 0;
+  virtual Result OnDylinkExportCount(Index count) = 0;
+  virtual Result OnDylinkImport(std::string_view module,
+                                std::string_view name,
+                                uint32_t flags) = 0;
+  virtual Result OnDylinkExport(std::string_view name, uint32_t flags) = 0;
+  virtual Result OnDylinkNeededCount(Index count) = 0;
+  virtual Result OnDylinkNeeded(std::string_view so_name) = 0;
+  virtual Result EndDylinkSection() = 0;
+
+  /* target_features section */
+  virtual Result BeginTargetFeaturesSection(Offset size) = 0;
+  virtual Result OnFeatureCount(Index count) = 0;
+  virtual Result OnFeature(uint8_t prefix, std::string_view name) = 0;
+  virtual Result EndTargetFeaturesSection() = 0;
+
   /* Linking section */
   virtual Result BeginLinkingSection(Offset size) = 0;
   virtual Result OnSymbolCount(Index count) = 0;
-  virtual Result OnSymbol(Index index, SymbolType type, uint32_t flags) = 0;
   virtual Result OnDataSymbol(Index index,
                               uint32_t flags,
-                              string_view name,
+                              std::string_view name,
                               Index segment,
                               uint32_t offset,
                               uint32_t size) = 0;
   virtual Result OnFunctionSymbol(Index index,
                                   uint32_t flags,
-                                  string_view name,
+                                  std::string_view name,
                                   Index function_index) = 0;
   virtual Result OnGlobalSymbol(Index index,
                                 uint32_t flags,
-                                string_view name,
+                                std::string_view name,
                                 Index global_index) = 0;
   virtual Result OnSectionSymbol(Index index,
                                  uint32_t flags,
                                  Index section_index) = 0;
+  virtual Result OnTagSymbol(Index index,
+                             uint32_t flags,
+                             std::string_view name,
+                             Index tag_index) = 0;
+  virtual Result OnTableSymbol(Index index,
+                               uint32_t flags,
+                               std::string_view name,
+                               Index table_index) = 0;
   virtual Result OnSegmentInfoCount(Index count) = 0;
   virtual Result OnSegmentInfo(Index index,
-                               string_view name,
-                               uint32_t alignment,
+                               std::string_view name,
+                               Address alignment_log2,
                                uint32_t flags) = 0;
   virtual Result OnInitFunctionCount(Index count) = 0;
   virtual Result OnInitFunction(uint32_t priority, Index function_index) = 0;
+  virtual Result OnComdatCount(Index count) = 0;
+  virtual Result OnComdatBegin(std::string_view name,
+                               uint32_t flags,
+                               Index count) = 0;
+  virtual Result OnComdatEntry(ComdatType kind, Index index) = 0;
   virtual Result EndLinkingSection() = 0;
 
-  /* Exception section */
-  virtual Result BeginExceptionSection(Offset size) = 0;
-  virtual Result OnExceptionCount(Index count) = 0;
-  virtual Result OnExceptionType(Index index, TypeVector& sig) = 0;
-  virtual Result EndExceptionSection() = 0;
+  /* Tag section */
+  virtual Result BeginTagSection(Offset size) = 0;
+  virtual Result OnTagCount(Index count) = 0;
+  virtual Result OnTagType(Index index, Index sig_index) = 0;
+  virtual Result EndTagSection() = 0;
 
-  /* InitExpr - used by elem, data and global sections; these functions are
-   * only called between calls to Begin*InitExpr and End*InitExpr */
-  virtual Result OnInitExprF32ConstExpr(Index index, uint32_t value) = 0;
-  virtual Result OnInitExprF64ConstExpr(Index index, uint64_t value) = 0;
-  virtual Result OnInitExprV128ConstExpr(Index index, v128 value) = 0;
-  virtual Result OnInitExprGetGlobalExpr(Index index, Index global_index) = 0;
-  virtual Result OnInitExprI32ConstExpr(Index index, uint32_t value) = 0;
-  virtual Result OnInitExprI64ConstExpr(Index index, uint64_t value) = 0;
+  /* Code Metadata sections */
+  virtual Result BeginCodeMetadataSection(std::string_view name,
+                                          Offset size) = 0;
+  virtual Result OnCodeMetadataFuncCount(Index count) = 0;
+  virtual Result OnCodeMetadataCount(Index function_index, Index count) = 0;
+  virtual Result OnCodeMetadata(Offset offset,
+                                const void* data,
+                                Address size) = 0;
+  virtual Result EndCodeMetadataSection() = 0;
 
   const State* state = nullptr;
 };

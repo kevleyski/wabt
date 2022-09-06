@@ -20,11 +20,12 @@
 #include <cinttypes>
 #include <cstdio>
 #include <cstdlib>
+#include <iterator>
 #include <map>
 #include <vector>
 
-#include "src/binary-reader.h"
 #include "src/binary-reader-opcnt.h"
+#include "src/binary-reader.h"
 #include "src/option-parser.h"
 #include "src/stream.h"
 
@@ -41,9 +42,10 @@ static const char* s_separator = ": ";
 
 static ReadBinaryOptions s_read_binary_options;
 static std::unique_ptr<FileStream> s_log_stream;
+static Features s_features;
 
 static const char s_description[] =
-R"(  Read a file in the wasm binary format, and count opcode usage for
+    R"(  Read a file in the wasm binary format, and count opcode usage for
   instructions.
 
 examples:
@@ -56,10 +58,10 @@ static void ParseOptions(int argc, char** argv) {
 
   parser.AddOption('v', "verbose", "Use multiple times for more info", []() {
     s_verbose++;
-    s_log_stream = FileStream::CreateStdout();
+    s_log_stream = FileStream::CreateStderr();
     s_read_binary_options.log_stream = s_log_stream.get();
   });
-  parser.AddHelpOption();
+  s_features.AddOptions(&parser);
   parser.AddOption('o', "output", "FILENAME",
                    "Output file for the opcode counts, by default use stdout",
                    [](const char* argument) { s_outfile = argument; });
@@ -84,18 +86,23 @@ struct SortByCountDescending {
 
 template <typename T>
 struct WithinCutoff {
-  bool operator()(const T& pair) const {
-    return pair.second >= s_cutoff;
-  }
+  bool operator()(const T& pair) const { return pair.second >= s_cutoff; }
 };
+
+static size_t SumCounts(const OpcodeInfoCounts& info_counts) {
+  size_t sum = 0;
+  for (auto& [info, count] : info_counts) {
+    sum += count;
+  }
+  return sum;
+}
 
 void WriteCounts(Stream& stream, const OpcodeInfoCounts& info_counts) {
   typedef std::pair<Opcode, size_t> OpcodeCountPair;
 
   std::map<Opcode, size_t> counts;
-  for (auto& info_count_pair: info_counts) {
-    Opcode opcode = info_count_pair.first.opcode();
-    size_t count = info_count_pair.second;
+  for (auto& [info, count] : info_counts) {
+    Opcode opcode = info.opcode();
     counts[opcode] += count;
   }
 
@@ -108,15 +115,12 @@ void WriteCounts(Stream& stream, const OpcodeInfoCounts& info_counts) {
   std::stable_sort(sorted.begin(), sorted.end(),
                    SortByCountDescending<OpcodeCountPair>());
 
-  for (auto& pair : sorted) {
-    Opcode opcode = pair.first;
-    size_t count = pair.second;
+  for (auto& [opcode, count] : sorted) {
     stream.Writef("%s%s%" PRIzd "\n", opcode.GetName(), s_separator, count);
   }
 }
 
-void WriteCountsWithImmediates(Stream& stream,
-                               const OpcodeInfoCounts& counts) {
+void WriteCountsWithImmediates(Stream& stream, const OpcodeInfoCounts& counts) {
   // Remove const from the key type so we can sort below.
   typedef std::pair<std::remove_const<OpcodeInfoCounts::key_type>::type,
                     OpcodeInfoCounts::mapped_type>
@@ -131,9 +135,7 @@ void WriteCountsWithImmediates(Stream& stream,
   std::stable_sort(sorted.begin(), sorted.end(),
                    SortByCountDescending<OpcodeInfoCountPair>());
 
-  for (auto& pair : sorted) {
-    auto&& info = pair.first;
-    size_t count = pair.second;
+  for (auto& [info, count] : sorted) {
     info.Write(stream);
     stream.Writef("%s%" PRIzd "\n", s_separator, count);
   }
@@ -155,9 +157,12 @@ int ProgramMain(int argc, char** argv) {
 
   if (Succeeded(result)) {
     OpcodeInfoCounts counts;
+    s_read_binary_options.features = s_features;
     result = ReadBinaryOpcnt(file_data.data(), file_data.size(),
                              s_read_binary_options, &counts);
     if (Succeeded(result)) {
+      stream.Writef("Total opcodes: %" PRIzd "\n\n", SumCounts(counts));
+
       stream.Writef("Opcode counts:\n");
       WriteCounts(stream, counts);
 

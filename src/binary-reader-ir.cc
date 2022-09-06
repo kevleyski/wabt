@@ -21,6 +21,7 @@
 #include <cstdarg>
 #include <cstdint>
 #include <cstdio>
+#include <deque>
 #include <vector>
 
 #include "src/binary-reader-nop.h"
@@ -43,49 +44,95 @@ struct LabelNode {
 LabelNode::LabelNode(LabelType label_type, ExprList* exprs, Expr* context)
     : label_type(label_type), exprs(exprs), context(context) {}
 
+class CodeMetadataExprQueue {
+ private:
+  struct Entry {
+    Func* func;
+    std::deque<std::unique_ptr<CodeMetadataExpr>> func_queue;
+    Entry(Func* f) : func(f) {}
+  };
+  std::deque<Entry> entries;
+
+ public:
+  CodeMetadataExprQueue() {}
+  void push_func(Func* f) { entries.emplace_back(f); }
+  void push_metadata(std::unique_ptr<CodeMetadataExpr> meta) {
+    assert(!entries.empty());
+    entries.back().func_queue.push_back(std::move(meta));
+  }
+
+  std::unique_ptr<CodeMetadataExpr> pop_match(Func* f, Offset offset) {
+    std::unique_ptr<CodeMetadataExpr> ret;
+    if (entries.empty()) {
+      return ret;
+    }
+
+    auto& current_entry = entries.front();
+
+    if (current_entry.func != f)
+      return ret;
+    if (current_entry.func_queue.empty()) {
+      entries.pop_front();
+      return ret;
+    }
+
+    auto& current_metadata = current_entry.func_queue.front();
+    if (current_metadata->loc.offset + current_entry.func->loc.offset !=
+        offset) {
+      return ret;
+    }
+
+    current_metadata->loc = Location(offset);
+    ret = std::move(current_metadata);
+    current_entry.func_queue.pop_front();
+
+    return ret;
+  }
+};
+
 class BinaryReaderIR : public BinaryReaderNop {
  public:
-  BinaryReaderIR(Module* out_module,
-                 const char* filename,
-                 Errors* errors);
+  BinaryReaderIR(Module* out_module, const char* filename, Errors* errors);
 
   bool OnError(const Error&) override;
 
   Result OnTypeCount(Index count) override;
-  Result OnType(Index index,
-                Index param_count,
-                Type* param_types,
-                Index result_count,
-                Type* result_types) override;
+  Result OnFuncType(Index index,
+                    Index param_count,
+                    Type* param_types,
+                    Index result_count,
+                    Type* result_types) override;
+  Result OnStructType(Index index, Index field_count, TypeMut* fields) override;
+  Result OnArrayType(Index index, TypeMut field) override;
 
   Result OnImportCount(Index count) override;
   Result OnImportFunc(Index import_index,
-                      string_view module_name,
-                      string_view field_name,
+                      std::string_view module_name,
+                      std::string_view field_name,
                       Index func_index,
                       Index sig_index) override;
   Result OnImportTable(Index import_index,
-                       string_view module_name,
-                       string_view field_name,
+                       std::string_view module_name,
+                       std::string_view field_name,
                        Index table_index,
                        Type elem_type,
                        const Limits* elem_limits) override;
   Result OnImportMemory(Index import_index,
-                        string_view module_name,
-                        string_view field_name,
+                        std::string_view module_name,
+                        std::string_view field_name,
                         Index memory_index,
                         const Limits* page_limits) override;
   Result OnImportGlobal(Index import_index,
-                        string_view module_name,
-                        string_view field_name,
+                        std::string_view module_name,
+                        std::string_view field_name,
                         Index global_index,
                         Type type,
                         bool mutable_) override;
-  Result OnImportException(Index import_index,
-                           string_view module_name,
-                           string_view field_name,
-                           Index except_index,
-                           TypeVector& sig) override;
+  Result OnImportTag(Index import_index,
+                     std::string_view module_name,
+                     std::string_view field_name,
+                     Index tag_index,
+                     Index sig_index) override;
 
   Result OnFunctionCount(Index count) override;
   Result OnFunction(Index index, Index sig_index) override;
@@ -107,32 +154,40 @@ class BinaryReaderIR : public BinaryReaderNop {
   Result OnExport(Index index,
                   ExternalKind kind,
                   Index item_index,
-                  string_view name) override;
+                  std::string_view name) override;
 
   Result OnStartFunction(Index func_index) override;
 
   Result OnFunctionBodyCount(Index count) override;
-  Result BeginFunctionBody(Index index) override;
+  Result BeginFunctionBody(Index index, Offset size) override;
   Result OnLocalDecl(Index decl_index, Index count, Type type) override;
 
+  Result OnOpcode(Opcode opcode) override;
   Result OnAtomicLoadExpr(Opcode opcode,
-                          uint32_t alignment_log2,
+                          Index memidx,
+                          Address alignment_log2,
                           Address offset) override;
   Result OnAtomicStoreExpr(Opcode opcode,
-                           uint32_t alignment_log2,
+                           Index memidx,
+                           Address alignment_log2,
                            Address offset) override;
   Result OnAtomicRmwExpr(Opcode opcode,
-                         uint32_t alignment_log2,
+                         Index memidx,
+                         Address alignment_log2,
                          Address offset) override;
   Result OnAtomicRmwCmpxchgExpr(Opcode opcode,
-                                uint32_t alignment_log2,
+                                Index memidx,
+                                Address alignment_log2,
                                 Address offset) override;
-  wabt::Result OnAtomicWaitExpr(Opcode opcode,
-                                uint32_t alignment_log2,
-                                Address offset) override;
-  wabt::Result OnAtomicWakeExpr(Opcode opcode,
-                                uint32_t alignment_log2,
-                                Address offset) override;
+  Result OnAtomicWaitExpr(Opcode opcode,
+                          Index memidx,
+                          Address alignment_log2,
+                          Address offset) override;
+  Result OnAtomicFenceExpr(uint32_t consistency_model) override;
+  Result OnAtomicNotifyExpr(Opcode opcode,
+                            Index memidx,
+                            Address alignment_log2,
+                            Address offset) override;
   Result OnBinaryExpr(Opcode opcode) override;
   Result OnBlockExpr(Type sig_type) override;
   Result OnBrExpr(Index depth) override;
@@ -141,82 +196,156 @@ class BinaryReaderIR : public BinaryReaderNop {
                        Index* target_depths,
                        Index default_target_depth) override;
   Result OnCallExpr(Index func_index) override;
-  Result OnCatchExpr() override;
-  Result OnCallIndirectExpr(Index sig_index) override;
+  Result OnCatchExpr(Index tag_index) override;
+  Result OnCatchAllExpr() override;
+  Result OnCallIndirectExpr(Index sig_index, Index table_index) override;
+  Result OnCallRefExpr() override;
+  Result OnReturnCallExpr(Index func_index) override;
+  Result OnReturnCallIndirectExpr(Index sig_index, Index table_index) override;
   Result OnCompareExpr(Opcode opcode) override;
   Result OnConvertExpr(Opcode opcode) override;
+  Result OnDelegateExpr(Index depth) override;
   Result OnDropExpr() override;
   Result OnElseExpr() override;
   Result OnEndExpr() override;
   Result OnF32ConstExpr(uint32_t value_bits) override;
   Result OnF64ConstExpr(uint64_t value_bits) override;
   Result OnV128ConstExpr(v128 value_bits) override;
-  Result OnGetGlobalExpr(Index global_index) override;
-  Result OnGetLocalExpr(Index local_index) override;
+  Result OnGlobalGetExpr(Index global_index) override;
+  Result OnGlobalSetExpr(Index global_index) override;
   Result OnI32ConstExpr(uint32_t value) override;
   Result OnI64ConstExpr(uint64_t value) override;
   Result OnIfExpr(Type sig_type) override;
-  Result OnIfExceptExpr(Type sig_type, Index except_index) override;
   Result OnLoadExpr(Opcode opcode,
-                    uint32_t alignment_log2,
+                    Index memidx,
+                    Address alignment_log2,
                     Address offset) override;
+  Result OnLocalGetExpr(Index local_index) override;
+  Result OnLocalSetExpr(Index local_index) override;
+  Result OnLocalTeeExpr(Index local_index) override;
   Result OnLoopExpr(Type sig_type) override;
-  Result OnMemoryGrowExpr() override;
-  Result OnMemorySizeExpr() override;
+  Result OnMemoryCopyExpr(Index srcmemidx, Index destmemidx) override;
+  Result OnDataDropExpr(Index segment_index) override;
+  Result OnMemoryFillExpr(Index memidx) override;
+  Result OnMemoryGrowExpr(Index memidx) override;
+  Result OnMemoryInitExpr(Index segment_index, Index memidx) override;
+  Result OnMemorySizeExpr(Index memidx) override;
+  Result OnTableCopyExpr(Index dst_index, Index src_index) override;
+  Result OnElemDropExpr(Index segment_index) override;
+  Result OnTableInitExpr(Index segment_index, Index table_index) override;
+  Result OnTableGetExpr(Index table_index) override;
+  Result OnTableSetExpr(Index table_index) override;
+  Result OnTableGrowExpr(Index table_index) override;
+  Result OnTableSizeExpr(Index table_index) override;
+  Result OnTableFillExpr(Index table_index) override;
+  Result OnRefFuncExpr(Index func_index) override;
+  Result OnRefNullExpr(Type type) override;
+  Result OnRefIsNullExpr() override;
   Result OnNopExpr() override;
-  Result OnRethrowExpr() override;
+  Result OnRethrowExpr(Index depth) override;
   Result OnReturnExpr() override;
-  Result OnSelectExpr() override;
-  Result OnSetGlobalExpr(Index global_index) override;
-  Result OnSetLocalExpr(Index local_index) override;
+  Result OnSelectExpr(Index result_count, Type* result_types) override;
   Result OnStoreExpr(Opcode opcode,
-                     uint32_t alignment_log2,
+                     Index memidx,
+                     Address alignment_log2,
                      Address offset) override;
-  Result OnThrowExpr(Index except_index) override;
-  Result OnTeeLocalExpr(Index local_index) override;
+  Result OnThrowExpr(Index tag_index) override;
   Result OnTryExpr(Type sig_type) override;
   Result OnUnaryExpr(Opcode opcode) override;
   Result OnTernaryExpr(Opcode opcode) override;
   Result OnUnreachableExpr() override;
   Result EndFunctionBody(Index index) override;
   Result OnSimdLaneOpExpr(Opcode opcode, uint64_t value) override;
+  Result OnSimdLoadLaneExpr(Opcode opcode,
+                            Index memidx,
+                            Address alignment_log2,
+                            Address offset,
+                            uint64_t value) override;
+  Result OnSimdStoreLaneExpr(Opcode opcode,
+                             Index memidx,
+                             Address alignment_log2,
+                             Address offset,
+                             uint64_t value) override;
   Result OnSimdShuffleOpExpr(Opcode opcode, v128 value) override;
+  Result OnLoadSplatExpr(Opcode opcode,
+                         Index memidx,
+                         Address alignment_log2,
+                         Address offset) override;
+  Result OnLoadZeroExpr(Opcode opcode,
+                        Index memidx,
+                        Address alignment_log2,
+                        Address offset) override;
 
   Result OnElemSegmentCount(Index count) override;
-  Result BeginElemSegment(Index index, Index table_index) override;
+  Result BeginElemSegment(Index index,
+                          Index table_index,
+                          uint8_t flags) override;
   Result BeginElemSegmentInitExpr(Index index) override;
   Result EndElemSegmentInitExpr(Index index) override;
-  Result OnElemSegmentFunctionIndexCount(Index index, Index count) override;
-  Result OnElemSegmentFunctionIndex(Index index, Index func_index) override;
+  Result OnElemSegmentElemType(Index index, Type elem_type) override;
+  Result OnElemSegmentElemExprCount(Index index, Index count) override;
+  Result OnElemSegmentElemExpr_RefNull(Index segment_index, Type type) override;
+  Result OnElemSegmentElemExpr_RefFunc(Index segment_index,
+                                       Index func_index) override;
 
   Result OnDataSegmentCount(Index count) override;
-  Result BeginDataSegment(Index index, Index memory_index) override;
+  Result BeginDataSegment(Index index,
+                          Index memory_index,
+                          uint8_t flags) override;
   Result BeginDataSegmentInitExpr(Index index) override;
   Result EndDataSegmentInitExpr(Index index) override;
   Result OnDataSegmentData(Index index,
                            const void* data,
                            Address size) override;
 
-  Result OnModuleName(string_view module_name) override;
+  Result OnModuleName(std::string_view module_name) override;
   Result OnFunctionNamesCount(Index num_functions) override;
   Result OnFunctionName(Index function_index,
-                        string_view function_name) override;
+                        std::string_view function_name) override;
   Result OnLocalNameLocalCount(Index function_index, Index num_locals) override;
   Result OnLocalName(Index function_index,
                      Index local_index,
-                     string_view local_name) override;
+                     std::string_view local_name) override;
+  Result OnNameEntry(NameSectionSubsection type,
+                     Index index,
+                     std::string_view name) override;
 
-  Result BeginExceptionSection(Offset size) override { return Result::Ok; }
-  Result OnExceptionCount(Index count) override { return Result::Ok; }
-  Result OnExceptionType(Index index, TypeVector& types) override;
-  Result EndExceptionSection() override { return Result::Ok; }
+  Result BeginTagSection(Offset size) override { return Result::Ok; }
+  Result OnTagCount(Index count) override { return Result::Ok; }
+  Result OnTagType(Index index, Index sig_index) override;
+  Result EndTagSection() override { return Result::Ok; }
 
-  Result OnInitExprF32ConstExpr(Index index, uint32_t value) override;
-  Result OnInitExprF64ConstExpr(Index index, uint64_t value) override;
-  Result OnInitExprV128ConstExpr(Index index, v128 value) override;
-  Result OnInitExprGetGlobalExpr(Index index, Index global_index) override;
-  Result OnInitExprI32ConstExpr(Index index, uint32_t value) override;
-  Result OnInitExprI64ConstExpr(Index index, uint64_t value) override;
+  Result OnDataSymbol(Index index,
+                      uint32_t flags,
+                      std::string_view name,
+                      Index segment,
+                      uint32_t offset,
+                      uint32_t size) override;
+  Result OnFunctionSymbol(Index index,
+                          uint32_t flags,
+                          std::string_view name,
+                          Index func_index) override;
+  Result OnGlobalSymbol(Index index,
+                        uint32_t flags,
+                        std::string_view name,
+                        Index global_index) override;
+  Result OnSectionSymbol(Index index,
+                         uint32_t flags,
+                         Index section_index) override;
+  /* Code Metadata sections */
+  Result BeginCodeMetadataSection(std::string_view name, Offset size) override;
+  Result OnCodeMetadataFuncCount(Index count) override;
+  Result OnCodeMetadataCount(Index function_index, Index count) override;
+  Result OnCodeMetadata(Offset offset, const void* data, Address size) override;
+
+  Result OnTagSymbol(Index index,
+                     uint32_t flags,
+                     std::string_view name,
+                     Index tag_index) override;
+  Result OnTableSymbol(Index index,
+                       uint32_t flags,
+                       std::string_view name,
+                       Index table_index) override;
 
  private:
   Location GetLocation() const;
@@ -224,20 +353,36 @@ class BinaryReaderIR : public BinaryReaderNop {
   void PushLabel(LabelType label_type,
                  ExprList* first,
                  Expr* context = nullptr);
+  Result BeginInitExpr(ExprList* init_expr);
+  Result EndInitExpr();
   Result PopLabel();
   Result GetLabelAt(LabelNode** label, Index depth);
   Result TopLabel(LabelNode** label);
   Result TopLabelExpr(LabelNode** label, Expr** expr);
   Result AppendExpr(std::unique_ptr<Expr> expr);
+  Result AppendCatch(Catch&& catch_);
+  void SetFuncDeclaration(FuncDeclaration* decl, Var var);
   void SetBlockDeclaration(BlockDeclaration* decl, Type sig_type);
+  Result SetMemoryName(Index index, std::string_view name);
+  Result SetTableName(Index index, std::string_view name);
+  Result SetFunctionName(Index index, std::string_view name);
+  Result SetGlobalName(Index index, std::string_view name);
+  Result SetDataSegmentName(Index index, std::string_view name);
+  Result SetElemSegmentName(Index index, std::string_view name);
+  Result SetTagName(Index index, std::string_view name);
+
+  std::string GetUniqueName(BindingHash* bindings,
+                            const std::string& original_name);
 
   Errors* errors_ = nullptr;
   Module* module_ = nullptr;
 
   Func* current_func_ = nullptr;
   std::vector<LabelNode> label_stack_;
-  ExprList* current_init_expr_ = nullptr;
   const char* filename_;
+
+  CodeMetadataExprQueue code_metadata_queue_;
+  std::string_view current_metadata_name_;
 };
 
 BinaryReaderIR::BinaryReaderIR(Module* out_module,
@@ -305,18 +450,34 @@ Result BinaryReaderIR::AppendExpr(std::unique_ptr<Expr> expr) {
   return Result::Ok;
 }
 
+void BinaryReaderIR::SetFuncDeclaration(FuncDeclaration* decl, Var var) {
+  decl->has_func_type = true;
+  decl->type_var = var;
+  if (auto* func_type = module_->GetFuncType(var)) {
+    decl->sig = func_type->sig;
+  }
+}
+
 void BinaryReaderIR::SetBlockDeclaration(BlockDeclaration* decl,
                                          Type sig_type) {
-  if (IsTypeIndex(sig_type)) {
-    Index type_index = GetTypeIndex(sig_type);
-    decl->has_func_type = true;
-    decl->type_var = Var(type_index);
-    decl->sig = module_->func_types[type_index]->sig;
+  if (sig_type.IsIndex()) {
+    Index type_index = sig_type.GetIndex();
+    SetFuncDeclaration(decl, Var(type_index, GetLocation()));
   } else {
     decl->has_func_type = false;
     decl->sig.param_types.clear();
-    decl->sig.result_types = GetInlineTypeVector(sig_type);
+    decl->sig.result_types = sig_type.GetInlineVector();
   }
+}
+
+std::string BinaryReaderIR::GetUniqueName(BindingHash* bindings,
+                                          const std::string& orig_name) {
+  int counter = 1;
+  std::string unique_name = orig_name;
+  while (bindings->count(unique_name) != 0) {
+    unique_name = orig_name + "." + std::to_string(counter++);
+  }
+  return unique_name;
 }
 
 bool BinaryReaderIR::OnError(const Error& error) {
@@ -326,20 +487,46 @@ bool BinaryReaderIR::OnError(const Error& error) {
 
 Result BinaryReaderIR::OnTypeCount(Index count) {
   WABT_TRY
-  module_->func_types.reserve(count);
+  module_->types.reserve(count);
   WABT_CATCH_BAD_ALLOC
   return Result::Ok;
 }
 
-Result BinaryReaderIR::OnType(Index index,
-                              Index param_count,
-                              Type* param_types,
-                              Index result_count,
-                              Type* result_types) {
-  auto field = MakeUnique<FuncTypeModuleField>(GetLocation());
-  FuncType& func_type = field->func_type;
-  func_type.sig.param_types.assign(param_types, param_types + param_count);
-  func_type.sig.result_types.assign(result_types, result_types + result_count);
+Result BinaryReaderIR::OnFuncType(Index index,
+                                  Index param_count,
+                                  Type* param_types,
+                                  Index result_count,
+                                  Type* result_types) {
+  auto field = MakeUnique<TypeModuleField>(GetLocation());
+  auto func_type = MakeUnique<FuncType>();
+  func_type->sig.param_types.assign(param_types, param_types + param_count);
+  func_type->sig.result_types.assign(result_types, result_types + result_count);
+  field->type = std::move(func_type);
+  module_->AppendField(std::move(field));
+  return Result::Ok;
+}
+
+Result BinaryReaderIR::OnStructType(Index index,
+                                    Index field_count,
+                                    TypeMut* fields) {
+  auto field = MakeUnique<TypeModuleField>(GetLocation());
+  auto struct_type = MakeUnique<StructType>();
+  struct_type->fields.resize(field_count);
+  for (Index i = 0; i < field_count; ++i) {
+    struct_type->fields[i].type = fields[i].type;
+    struct_type->fields[i].mutable_ = fields[i].mutable_;
+  }
+  field->type = std::move(struct_type);
+  module_->AppendField(std::move(field));
+  return Result::Ok;
+}
+
+Result BinaryReaderIR::OnArrayType(Index index, TypeMut type_mut) {
+  auto field = MakeUnique<TypeModuleField>(GetLocation());
+  auto array_type = MakeUnique<ArrayType>();
+  array_type->field.type = type_mut.type;
+  array_type->field.mutable_ = type_mut.mutable_;
+  field->type = std::move(array_type);
   module_->AppendField(std::move(field));
   return Result::Ok;
 }
@@ -352,44 +539,43 @@ Result BinaryReaderIR::OnImportCount(Index count) {
 }
 
 Result BinaryReaderIR::OnImportFunc(Index import_index,
-                                    string_view module_name,
-                                    string_view field_name,
+                                    std::string_view module_name,
+                                    std::string_view field_name,
                                     Index func_index,
                                     Index sig_index) {
   auto import = MakeUnique<FuncImport>();
-  import->module_name = module_name.to_string();
-  import->field_name = field_name.to_string();
-  import->func.decl.has_func_type = true;
-  import->func.decl.type_var = Var(sig_index, GetLocation());
-  import->func.decl.sig = module_->func_types[sig_index]->sig;
+  import->module_name = module_name;
+  import->field_name = field_name;
+  SetFuncDeclaration(&import->func.decl, Var(sig_index, GetLocation()));
   module_->AppendField(
       MakeUnique<ImportModuleField>(std::move(import), GetLocation()));
   return Result::Ok;
 }
 
 Result BinaryReaderIR::OnImportTable(Index import_index,
-                                     string_view module_name,
-                                     string_view field_name,
+                                     std::string_view module_name,
+                                     std::string_view field_name,
                                      Index table_index,
                                      Type elem_type,
                                      const Limits* elem_limits) {
   auto import = MakeUnique<TableImport>();
-  import->module_name = module_name.to_string();
-  import->field_name = field_name.to_string();
+  import->module_name = module_name;
+  import->field_name = field_name;
   import->table.elem_limits = *elem_limits;
+  import->table.elem_type = elem_type;
   module_->AppendField(
       MakeUnique<ImportModuleField>(std::move(import), GetLocation()));
   return Result::Ok;
 }
 
 Result BinaryReaderIR::OnImportMemory(Index import_index,
-                                      string_view module_name,
-                                      string_view field_name,
+                                      std::string_view module_name,
+                                      std::string_view field_name,
                                       Index memory_index,
                                       const Limits* page_limits) {
   auto import = MakeUnique<MemoryImport>();
-  import->module_name = module_name.to_string();
-  import->field_name = field_name.to_string();
+  import->module_name = module_name;
+  import->field_name = field_name;
   import->memory.page_limits = *page_limits;
   module_->AppendField(
       MakeUnique<ImportModuleField>(std::move(import), GetLocation()));
@@ -397,14 +583,14 @@ Result BinaryReaderIR::OnImportMemory(Index import_index,
 }
 
 Result BinaryReaderIR::OnImportGlobal(Index import_index,
-                                      string_view module_name,
-                                      string_view field_name,
+                                      std::string_view module_name,
+                                      std::string_view field_name,
                                       Index global_index,
                                       Type type,
                                       bool mutable_) {
   auto import = MakeUnique<GlobalImport>();
-  import->module_name = module_name.to_string();
-  import->field_name = field_name.to_string();
+  import->module_name = module_name;
+  import->field_name = field_name;
   import->global.type = type;
   import->global.mutable_ = mutable_;
   module_->AppendField(
@@ -412,15 +598,15 @@ Result BinaryReaderIR::OnImportGlobal(Index import_index,
   return Result::Ok;
 }
 
-Result BinaryReaderIR::OnImportException(Index import_index,
-                                         string_view module_name,
-                                         string_view field_name,
-                                         Index except_index,
-                                         TypeVector& sig) {
-  auto import = MakeUnique<ExceptionImport>();
-  import->module_name = module_name.to_string();
-  import->field_name = field_name.to_string();
-  import->except.sig = sig;
+Result BinaryReaderIR::OnImportTag(Index import_index,
+                                   std::string_view module_name,
+                                   std::string_view field_name,
+                                   Index tag_index,
+                                   Index sig_index) {
+  auto import = MakeUnique<TagImport>();
+  import->module_name = module_name;
+  import->field_name = field_name;
+  SetFuncDeclaration(&import->tag.decl, Var(sig_index, GetLocation()));
   module_->AppendField(
       MakeUnique<ImportModuleField>(std::move(import), GetLocation()));
   return Result::Ok;
@@ -436,9 +622,7 @@ Result BinaryReaderIR::OnFunctionCount(Index count) {
 Result BinaryReaderIR::OnFunction(Index index, Index sig_index) {
   auto field = MakeUnique<FuncModuleField>(GetLocation());
   Func& func = field->func;
-  func.decl.has_func_type = true;
-  func.decl.type_var = Var(sig_index, GetLocation());
-  func.decl.sig = module_->func_types[sig_index]->sig;
+  SetFuncDeclaration(&func.decl, Var(sig_index, GetLocation()));
   module_->AppendField(std::move(field));
   return Result::Ok;
 }
@@ -456,6 +640,7 @@ Result BinaryReaderIR::OnTable(Index index,
   auto field = MakeUnique<TableModuleField>(GetLocation());
   Table& table = field->table;
   table.elem_limits = *elem_limits;
+  table.elem_type = elem_type;
   module_->AppendField(std::move(field));
   return Result::Ok;
 }
@@ -494,13 +679,11 @@ Result BinaryReaderIR::BeginGlobal(Index index, Type type, bool mutable_) {
 Result BinaryReaderIR::BeginGlobalInitExpr(Index index) {
   assert(index == module_->globals.size() - 1);
   Global* global = module_->globals[index];
-  current_init_expr_ = &global->init_expr;
-  return Result::Ok;
+  return BeginInitExpr(&global->init_expr);
 }
 
 Result BinaryReaderIR::EndGlobalInitExpr(Index index) {
-  current_init_expr_ = nullptr;
-  return Result::Ok;
+  return EndInitExpr();
 }
 
 Result BinaryReaderIR::OnExportCount(Index count) {
@@ -513,27 +696,10 @@ Result BinaryReaderIR::OnExportCount(Index count) {
 Result BinaryReaderIR::OnExport(Index index,
                                 ExternalKind kind,
                                 Index item_index,
-                                string_view name) {
+                                std::string_view name) {
   auto field = MakeUnique<ExportModuleField>(GetLocation());
   Export& export_ = field->export_;
-  export_.name = name.to_string();
-  switch (kind) {
-    case ExternalKind::Func:
-      assert(item_index < module_->funcs.size());
-      break;
-    case ExternalKind::Table:
-      assert(item_index < module_->tables.size());
-      break;
-    case ExternalKind::Memory:
-      assert(item_index < module_->memories.size());
-      break;
-    case ExternalKind::Global:
-      assert(item_index < module_->globals.size());
-      break;
-    case ExternalKind::Except:
-      // Note: Can't check if index valid, exceptions section comes later.
-      break;
-  }
+  export_.name = name;
   export_.var = Var(item_index, GetLocation());
   export_.kind = kind;
   module_->AppendField(std::move(field));
@@ -541,19 +707,25 @@ Result BinaryReaderIR::OnExport(Index index,
 }
 
 Result BinaryReaderIR::OnStartFunction(Index func_index) {
-  assert(func_index < module_->funcs.size());
   Var start(func_index, GetLocation());
   module_->AppendField(MakeUnique<StartModuleField>(start, GetLocation()));
   return Result::Ok;
 }
 
 Result BinaryReaderIR::OnFunctionBodyCount(Index count) {
-  assert(module_->num_func_imports + count == module_->funcs.size());
+  // Can hit this case on a malformed module if we don't stop on first error.
+  if (module_->num_func_imports + count != module_->funcs.size()) {
+    PrintError(
+        "number of imported func + func count in code section does not match "
+        "actual number of funcs in module");
+    return Result::Error;
+  }
   return Result::Ok;
 }
 
-Result BinaryReaderIR::BeginFunctionBody(Index index) {
+Result BinaryReaderIR::BeginFunctionBody(Index index, Offset size) {
   current_func_ = module_->funcs[index];
+  current_func_->loc = GetLocation();
   PushLabel(LabelType::Func, &current_func_->exprs);
   return Result::Ok;
 }
@@ -563,46 +735,65 @@ Result BinaryReaderIR::OnLocalDecl(Index decl_index, Index count, Type type) {
   return Result::Ok;
 }
 
+Result BinaryReaderIR::OnOpcode(Opcode opcode) {
+  std::unique_ptr<CodeMetadataExpr> metadata =
+      code_metadata_queue_.pop_match(current_func_, GetLocation().offset - 1);
+  if (metadata) {
+    return AppendExpr(std::move(metadata));
+  }
+  return Result::Ok;
+}
+
 Result BinaryReaderIR::OnAtomicLoadExpr(Opcode opcode,
-                                        uint32_t alignment_log2,
+                                        Index memidx,
+                                        Address alignment_log2,
                                         Address offset) {
-  return AppendExpr(
-      MakeUnique<AtomicLoadExpr>(opcode, 1 << alignment_log2, offset));
+  return AppendExpr(MakeUnique<AtomicLoadExpr>(
+      opcode, Var(memidx, GetLocation()), 1 << alignment_log2, offset));
 }
 
 Result BinaryReaderIR::OnAtomicStoreExpr(Opcode opcode,
-                                         uint32_t alignment_log2,
+                                         Index memidx,
+                                         Address alignment_log2,
                                          Address offset) {
-  return AppendExpr(
-      MakeUnique<AtomicStoreExpr>(opcode, 1 << alignment_log2, offset));
+  return AppendExpr(MakeUnique<AtomicStoreExpr>(
+      opcode, Var(memidx, GetLocation()), 1 << alignment_log2, offset));
 }
 
 Result BinaryReaderIR::OnAtomicRmwExpr(Opcode opcode,
-                                       uint32_t alignment_log2,
+                                       Index memidx,
+                                       Address alignment_log2,
                                        Address offset) {
-  return AppendExpr(
-      MakeUnique<AtomicRmwExpr>(opcode, 1 << alignment_log2, offset));
+  return AppendExpr(MakeUnique<AtomicRmwExpr>(
+      opcode, Var(memidx, GetLocation()), 1 << alignment_log2, offset));
 }
 
 Result BinaryReaderIR::OnAtomicRmwCmpxchgExpr(Opcode opcode,
-                                              uint32_t alignment_log2,
+                                              Index memidx,
+                                              Address alignment_log2,
                                               Address offset) {
-  return AppendExpr(
-      MakeUnique<AtomicRmwCmpxchgExpr>(opcode, 1 << alignment_log2, offset));
+  return AppendExpr(MakeUnique<AtomicRmwCmpxchgExpr>(
+      opcode, Var(memidx, GetLocation()), 1 << alignment_log2, offset));
 }
 
-wabt::Result BinaryReaderIR::OnAtomicWaitExpr(Opcode opcode,
-                                              uint32_t alignment_log2,
-                                              Address offset) {
-  return AppendExpr(
-      MakeUnique<AtomicWaitExpr>(opcode, 1 << alignment_log2, offset));
+Result BinaryReaderIR::OnAtomicWaitExpr(Opcode opcode,
+                                        Index memidx,
+                                        Address alignment_log2,
+                                        Address offset) {
+  return AppendExpr(MakeUnique<AtomicWaitExpr>(
+      opcode, Var(memidx, GetLocation()), 1 << alignment_log2, offset));
 }
 
-wabt::Result BinaryReaderIR::OnAtomicWakeExpr(Opcode opcode,
-                                              uint32_t alignment_log2,
-                                              Address offset) {
-  return AppendExpr(
-      MakeUnique<AtomicWakeExpr>(opcode, 1 << alignment_log2, offset));
+Result BinaryReaderIR::OnAtomicFenceExpr(uint32_t consistency_model) {
+  return AppendExpr(MakeUnique<AtomicFenceExpr>(consistency_model));
+}
+
+Result BinaryReaderIR::OnAtomicNotifyExpr(Opcode opcode,
+                                          Index memidx,
+                                          Address alignment_log2,
+                                          Address offset) {
+  return AppendExpr(MakeUnique<AtomicNotifyExpr>(
+      opcode, Var(memidx, GetLocation()), 1 << alignment_log2, offset));
 }
 
 Result BinaryReaderIR::OnBinaryExpr(Opcode opcode) {
@@ -619,36 +810,49 @@ Result BinaryReaderIR::OnBlockExpr(Type sig_type) {
 }
 
 Result BinaryReaderIR::OnBrExpr(Index depth) {
-  return AppendExpr(MakeUnique<BrExpr>(Var(depth)));
+  return AppendExpr(MakeUnique<BrExpr>(Var(depth, GetLocation())));
 }
 
 Result BinaryReaderIR::OnBrIfExpr(Index depth) {
-  return AppendExpr(MakeUnique<BrIfExpr>(Var(depth)));
+  return AppendExpr(MakeUnique<BrIfExpr>(Var(depth, GetLocation())));
 }
 
 Result BinaryReaderIR::OnBrTableExpr(Index num_targets,
                                      Index* target_depths,
                                      Index default_target_depth) {
   auto expr = MakeUnique<BrTableExpr>();
-  expr->default_target = Var(default_target_depth);
+  expr->default_target = Var(default_target_depth, GetLocation());
   expr->targets.resize(num_targets);
   for (Index i = 0; i < num_targets; ++i) {
-    expr->targets[i] = Var(target_depths[i]);
+    expr->targets[i] = Var(target_depths[i], GetLocation());
   }
   return AppendExpr(std::move(expr));
 }
 
 Result BinaryReaderIR::OnCallExpr(Index func_index) {
-  assert(func_index < module_->funcs.size());
-  return AppendExpr(MakeUnique<CallExpr>(Var(func_index)));
+  return AppendExpr(MakeUnique<CallExpr>(Var(func_index, GetLocation())));
 }
 
-Result BinaryReaderIR::OnCallIndirectExpr(Index sig_index) {
-  assert(sig_index < module_->func_types.size());
+Result BinaryReaderIR::OnCallIndirectExpr(Index sig_index, Index table_index) {
   auto expr = MakeUnique<CallIndirectExpr>();
-  expr->decl.has_func_type = true;
-  expr->decl.type_var = Var(sig_index, GetLocation());
-  expr->decl.sig = module_->func_types[sig_index]->sig;
+  SetFuncDeclaration(&expr->decl, Var(sig_index, GetLocation()));
+  expr->table = Var(table_index, GetLocation());
+  return AppendExpr(std::move(expr));
+}
+
+Result BinaryReaderIR::OnCallRefExpr() {
+  return AppendExpr(MakeUnique<CallRefExpr>());
+}
+
+Result BinaryReaderIR::OnReturnCallExpr(Index func_index) {
+  return AppendExpr(MakeUnique<ReturnCallExpr>(Var(func_index, GetLocation())));
+}
+
+Result BinaryReaderIR::OnReturnCallIndirectExpr(Index sig_index,
+                                                Index table_index) {
+  auto expr = MakeUnique<ReturnCallIndirectExpr>();
+  SetFuncDeclaration(&expr->decl, Var(sig_index, GetLocation()));
+  expr->table = Var(table_index, GetLocation());
   return AppendExpr(std::move(expr));
 }
 
@@ -674,11 +878,6 @@ Result BinaryReaderIR::OnElseExpr() {
     if_expr->true_.end_loc = GetLocation();
     label->exprs = &if_expr->false_;
     label->label_type = LabelType::Else;
-  } else if (label->label_type == LabelType::IfExcept) {
-    auto* if_except_expr = cast<IfExceptExpr>(expr);
-    if_except_expr->true_.end_loc = GetLocation();
-    label->exprs = &if_except_expr->false_;
-    label->label_type = LabelType::IfExceptElse;
   } else {
     PrintError("else expression without matching if");
     return Result::Error;
@@ -688,35 +887,32 @@ Result BinaryReaderIR::OnElseExpr() {
 }
 
 Result BinaryReaderIR::OnEndExpr() {
-  LabelNode* label;
-  Expr* expr;
-  CHECK_RESULT(TopLabelExpr(&label, &expr));
-  switch (label->label_type) {
-    case LabelType::Block:
-      cast<BlockExpr>(expr)->block.end_loc = GetLocation();
-      break;
-    case LabelType::Loop:
-      cast<LoopExpr>(expr)->block.end_loc = GetLocation();
-      break;
-    case LabelType::If:
-      cast<IfExpr>(expr)->true_.end_loc = GetLocation();
-      break;
-    case LabelType::Else:
-      cast<IfExpr>(expr)->false_end_loc = GetLocation();
-      break;
-    case LabelType::IfExcept:
-      cast<IfExceptExpr>(expr)->true_.end_loc = GetLocation();
-      break;
-    case LabelType::IfExceptElse:
-      cast<IfExceptExpr>(expr)->false_end_loc = GetLocation();
-      break;
-    case LabelType::Try:
-      cast<TryExpr>(expr)->block.end_loc = GetLocation();
-      break;
+  if (label_stack_.size() > 1) {
+    LabelNode* label;
+    Expr* expr;
+    CHECK_RESULT(TopLabelExpr(&label, &expr));
+    switch (label->label_type) {
+      case LabelType::Block:
+        cast<BlockExpr>(expr)->block.end_loc = GetLocation();
+        break;
+      case LabelType::Loop:
+        cast<LoopExpr>(expr)->block.end_loc = GetLocation();
+        break;
+      case LabelType::If:
+        cast<IfExpr>(expr)->true_.end_loc = GetLocation();
+        break;
+      case LabelType::Else:
+        cast<IfExpr>(expr)->false_end_loc = GetLocation();
+        break;
+      case LabelType::Try:
+        cast<TryExpr>(expr)->block.end_loc = GetLocation();
+        break;
 
-    case LabelType::Func:
-    case LabelType::Catch:
-      break;
+      case LabelType::InitExpr:
+      case LabelType::Func:
+      case LabelType::Catch:
+        break;
+    }
   }
 
   return PopLabel();
@@ -737,13 +933,13 @@ Result BinaryReaderIR::OnV128ConstExpr(v128 value_bits) {
       MakeUnique<ConstExpr>(Const::V128(value_bits, GetLocation())));
 }
 
-Result BinaryReaderIR::OnGetGlobalExpr(Index global_index) {
+Result BinaryReaderIR::OnGlobalGetExpr(Index global_index) {
   return AppendExpr(
-      MakeUnique<GetGlobalExpr>(Var(global_index, GetLocation())));
+      MakeUnique<GlobalGetExpr>(Var(global_index, GetLocation())));
 }
 
-Result BinaryReaderIR::OnGetLocalExpr(Index local_index) {
-  return AppendExpr(MakeUnique<GetLocalExpr>(Var(local_index, GetLocation())));
+Result BinaryReaderIR::OnLocalGetExpr(Index local_index) {
+  return AppendExpr(MakeUnique<LocalGetExpr>(Var(local_index, GetLocation())));
 }
 
 Result BinaryReaderIR::OnI32ConstExpr(uint32_t value) {
@@ -763,20 +959,12 @@ Result BinaryReaderIR::OnIfExpr(Type sig_type) {
   return Result::Ok;
 }
 
-Result BinaryReaderIR::OnIfExceptExpr(Type sig_type, Index except_index) {
-  auto expr = MakeUnique<IfExceptExpr>();
-  expr->except_var = Var(except_index, GetLocation());
-  SetBlockDeclaration(&expr->true_.decl, sig_type);
-  ExprList* expr_list = &expr->true_.exprs;
-  CHECK_RESULT(AppendExpr(std::move(expr)));
-  PushLabel(LabelType::IfExcept, expr_list);
-  return Result::Ok;
-}
-
 Result BinaryReaderIR::OnLoadExpr(Opcode opcode,
-                                  uint32_t alignment_log2,
+                                  Index memidx,
+                                  Address alignment_log2,
                                   Address offset) {
-  return AppendExpr(MakeUnique<LoadExpr>(opcode, 1 << alignment_log2, offset));
+  return AppendExpr(MakeUnique<LoadExpr>(opcode, Var(memidx, GetLocation()),
+                                         1 << alignment_log2, offset));
 }
 
 Result BinaryReaderIR::OnLoopExpr(Type sig_type) {
@@ -788,51 +976,119 @@ Result BinaryReaderIR::OnLoopExpr(Type sig_type) {
   return Result::Ok;
 }
 
-Result BinaryReaderIR::OnMemoryGrowExpr() {
-  return AppendExpr(MakeUnique<MemoryGrowExpr>());
+Result BinaryReaderIR::OnMemoryCopyExpr(Index srcmemidx, Index destmemidx) {
+  return AppendExpr(MakeUnique<MemoryCopyExpr>(Var(srcmemidx, GetLocation()),
+                                               Var(destmemidx, GetLocation())));
 }
 
-Result BinaryReaderIR::OnMemorySizeExpr() {
-  return AppendExpr(MakeUnique<MemorySizeExpr>());
+Result BinaryReaderIR::OnDataDropExpr(Index segment) {
+  return AppendExpr(MakeUnique<DataDropExpr>(Var(segment, GetLocation())));
+}
+
+Result BinaryReaderIR::OnMemoryFillExpr(Index memidx) {
+  return AppendExpr(MakeUnique<MemoryFillExpr>(Var(memidx, GetLocation())));
+}
+
+Result BinaryReaderIR::OnMemoryGrowExpr(Index memidx) {
+  return AppendExpr(MakeUnique<MemoryGrowExpr>(Var(memidx, GetLocation())));
+}
+
+Result BinaryReaderIR::OnMemoryInitExpr(Index segment, Index memidx) {
+  return AppendExpr(MakeUnique<MemoryInitExpr>(Var(segment, GetLocation()),
+                                               Var(memidx, GetLocation())));
+}
+
+Result BinaryReaderIR::OnMemorySizeExpr(Index memidx) {
+  return AppendExpr(MakeUnique<MemorySizeExpr>(Var(memidx, GetLocation())));
+}
+
+Result BinaryReaderIR::OnTableCopyExpr(Index dst_index, Index src_index) {
+  return AppendExpr(MakeUnique<TableCopyExpr>(Var(dst_index, GetLocation()),
+                                              Var(src_index, GetLocation())));
+}
+
+Result BinaryReaderIR::OnElemDropExpr(Index segment) {
+  return AppendExpr(MakeUnique<ElemDropExpr>(Var(segment, GetLocation())));
+}
+
+Result BinaryReaderIR::OnTableInitExpr(Index segment, Index table_index) {
+  return AppendExpr(MakeUnique<TableInitExpr>(Var(segment, GetLocation()),
+                                              Var(table_index, GetLocation())));
+}
+
+Result BinaryReaderIR::OnTableGetExpr(Index table_index) {
+  return AppendExpr(MakeUnique<TableGetExpr>(Var(table_index, GetLocation())));
+}
+
+Result BinaryReaderIR::OnTableSetExpr(Index table_index) {
+  return AppendExpr(MakeUnique<TableSetExpr>(Var(table_index, GetLocation())));
+}
+
+Result BinaryReaderIR::OnTableGrowExpr(Index table_index) {
+  return AppendExpr(MakeUnique<TableGrowExpr>(Var(table_index, GetLocation())));
+}
+
+Result BinaryReaderIR::OnTableSizeExpr(Index table_index) {
+  return AppendExpr(MakeUnique<TableSizeExpr>(Var(table_index, GetLocation())));
+}
+
+Result BinaryReaderIR::OnTableFillExpr(Index table_index) {
+  return AppendExpr(MakeUnique<TableFillExpr>(Var(table_index, GetLocation())));
+}
+
+Result BinaryReaderIR::OnRefFuncExpr(Index func_index) {
+  return AppendExpr(MakeUnique<RefFuncExpr>(Var(func_index, GetLocation())));
+}
+
+Result BinaryReaderIR::OnRefNullExpr(Type type) {
+  return AppendExpr(MakeUnique<RefNullExpr>(type));
+}
+
+Result BinaryReaderIR::OnRefIsNullExpr() {
+  return AppendExpr(MakeUnique<RefIsNullExpr>());
 }
 
 Result BinaryReaderIR::OnNopExpr() {
   return AppendExpr(MakeUnique<NopExpr>());
 }
 
-Result BinaryReaderIR::OnRethrowExpr() {
-  return AppendExpr(MakeUnique<RethrowExpr>());
+Result BinaryReaderIR::OnRethrowExpr(Index depth) {
+  return AppendExpr(MakeUnique<RethrowExpr>(Var(depth, GetLocation())));
 }
 
 Result BinaryReaderIR::OnReturnExpr() {
   return AppendExpr(MakeUnique<ReturnExpr>());
 }
 
-Result BinaryReaderIR::OnSelectExpr() {
-  return AppendExpr(MakeUnique<SelectExpr>());
+Result BinaryReaderIR::OnSelectExpr(Index result_count, Type* result_types) {
+  TypeVector results;
+  results.assign(result_types, result_types + result_count);
+  return AppendExpr(MakeUnique<SelectExpr>(results));
 }
 
-Result BinaryReaderIR::OnSetGlobalExpr(Index global_index) {
+Result BinaryReaderIR::OnGlobalSetExpr(Index global_index) {
   return AppendExpr(
-      MakeUnique<SetGlobalExpr>(Var(global_index, GetLocation())));
+      MakeUnique<GlobalSetExpr>(Var(global_index, GetLocation())));
 }
 
-Result BinaryReaderIR::OnSetLocalExpr(Index local_index) {
-  return AppendExpr(MakeUnique<SetLocalExpr>(Var(local_index, GetLocation())));
+Result BinaryReaderIR::OnLocalSetExpr(Index local_index) {
+  return AppendExpr(MakeUnique<LocalSetExpr>(Var(local_index, GetLocation())));
 }
 
 Result BinaryReaderIR::OnStoreExpr(Opcode opcode,
-                                   uint32_t alignment_log2,
+                                   Index memidx,
+                                   Address alignment_log2,
                                    Address offset) {
-  return AppendExpr(MakeUnique<StoreExpr>(opcode, 1 << alignment_log2, offset));
+  return AppendExpr(MakeUnique<StoreExpr>(opcode, Var(memidx, GetLocation()),
+                                          1 << alignment_log2, offset));
 }
 
-Result BinaryReaderIR::OnThrowExpr(Index except_index) {
-  return AppendExpr(MakeUnique<ThrowExpr>(Var(except_index, GetLocation())));
+Result BinaryReaderIR::OnThrowExpr(Index tag_index) {
+  return AppendExpr(MakeUnique<ThrowExpr>(Var(tag_index, GetLocation())));
 }
 
-Result BinaryReaderIR::OnTeeLocalExpr(Index local_index) {
-  return AppendExpr(MakeUnique<TeeLocalExpr>(Var(local_index, GetLocation())));
+Result BinaryReaderIR::OnLocalTeeExpr(Index local_index) {
+  return AppendExpr(MakeUnique<LocalTeeExpr>(Var(local_index, GetLocation())));
 }
 
 Result BinaryReaderIR::OnTryExpr(Type sig_type) {
@@ -846,19 +1102,64 @@ Result BinaryReaderIR::OnTryExpr(Type sig_type) {
   return Result::Ok;
 }
 
-Result BinaryReaderIR::OnCatchExpr() {
-  LabelNode* label;
+Result BinaryReaderIR::AppendCatch(Catch&& catch_) {
+  LabelNode* label = nullptr;
   CHECK_RESULT(TopLabel(&label));
+
   if (label->label_type != LabelType::Try) {
-    PrintError("catch expression without matching try");
+    PrintError("catch not inside try block");
     return Result::Error;
   }
 
-  LabelNode* parent_label;
-  CHECK_RESULT(GetLabelAt(&parent_label, 1));
+  auto* try_ = cast<TryExpr>(label->context);
 
-  label->label_type = LabelType::Catch;
-  label->exprs = &cast<TryExpr>(&parent_label->exprs->back())->catch_;
+  if (catch_.IsCatchAll() && !try_->catches.empty() &&
+      try_->catches.back().IsCatchAll()) {
+    PrintError("only one catch_all allowed in try block");
+    return Result::Error;
+  }
+
+  if (try_->kind == TryKind::Plain) {
+    try_->kind = TryKind::Catch;
+  } else if (try_->kind != TryKind::Catch) {
+    PrintError("catch not allowed in try-delegate");
+    return Result::Error;
+  }
+
+  try_->catches.push_back(std::move(catch_));
+  label->exprs = &try_->catches.back().exprs;
+  return Result::Ok;
+}
+
+Result BinaryReaderIR::OnCatchExpr(Index except_index) {
+  return AppendCatch(Catch(Var(except_index, GetLocation())));
+}
+
+Result BinaryReaderIR::OnCatchAllExpr() {
+  return AppendCatch(Catch(GetLocation()));
+}
+
+Result BinaryReaderIR::OnDelegateExpr(Index depth) {
+  LabelNode* label = nullptr;
+  CHECK_RESULT(TopLabel(&label));
+
+  if (label->label_type != LabelType::Try) {
+    PrintError("delegate not inside try block");
+    return Result::Error;
+  }
+
+  auto* try_ = cast<TryExpr>(label->context);
+
+  if (try_->kind == TryKind::Plain) {
+    try_->kind = TryKind::Delegate;
+  } else if (try_->kind != TryKind::Delegate) {
+    PrintError("delegate not allowed in try-catch");
+    return Result::Error;
+  }
+
+  try_->delegate_target = Var(depth, GetLocation());
+
+  PopLabel();
   return Result::Ok;
 }
 
@@ -875,7 +1176,6 @@ Result BinaryReaderIR::OnUnreachableExpr() {
 }
 
 Result BinaryReaderIR::EndFunctionBody(Index index) {
-  CHECK_RESULT(PopLabel());
   current_func_ = nullptr;
   return Result::Ok;
 }
@@ -884,8 +1184,42 @@ Result BinaryReaderIR::OnSimdLaneOpExpr(Opcode opcode, uint64_t value) {
   return AppendExpr(MakeUnique<SimdLaneOpExpr>(opcode, value));
 }
 
+Result BinaryReaderIR::OnSimdLoadLaneExpr(Opcode opcode,
+                                          Index memidx,
+                                          Address alignment_log2,
+                                          Address offset,
+                                          uint64_t value) {
+  return AppendExpr(MakeUnique<SimdLoadLaneExpr>(
+      opcode, Var(memidx, GetLocation()), 1 << alignment_log2, offset, value));
+}
+
+Result BinaryReaderIR::OnSimdStoreLaneExpr(Opcode opcode,
+                                           Index memidx,
+                                           Address alignment_log2,
+                                           Address offset,
+                                           uint64_t value) {
+  return AppendExpr(MakeUnique<SimdStoreLaneExpr>(
+      opcode, Var(memidx, GetLocation()), 1 << alignment_log2, offset, value));
+}
+
 Result BinaryReaderIR::OnSimdShuffleOpExpr(Opcode opcode, v128 value) {
   return AppendExpr(MakeUnique<SimdShuffleOpExpr>(opcode, value));
+}
+
+Result BinaryReaderIR::OnLoadSplatExpr(Opcode opcode,
+                                       Index memidx,
+                                       Address alignment_log2,
+                                       Address offset) {
+  return AppendExpr(MakeUnique<LoadSplatExpr>(
+      opcode, Var(memidx, GetLocation()), 1 << alignment_log2, offset));
+}
+
+Result BinaryReaderIR::OnLoadZeroExpr(Opcode opcode,
+                                      Index memidx,
+                                      Address alignment_log2,
+                                      Address offset) {
+  return AppendExpr(MakeUnique<LoadZeroExpr>(opcode, Var(memidx, GetLocation()),
+                                             1 << alignment_log2, offset));
 }
 
 Result BinaryReaderIR::OnElemSegmentCount(Index count) {
@@ -895,43 +1229,77 @@ Result BinaryReaderIR::OnElemSegmentCount(Index count) {
   return Result::Ok;
 }
 
-Result BinaryReaderIR::BeginElemSegment(Index index, Index table_index) {
+Result BinaryReaderIR::BeginElemSegment(Index index,
+                                        Index table_index,
+                                        uint8_t flags) {
   auto field = MakeUnique<ElemSegmentModuleField>(GetLocation());
   ElemSegment& elem_segment = field->elem_segment;
   elem_segment.table_var = Var(table_index, GetLocation());
+  if ((flags & SegDeclared) == SegDeclared) {
+    elem_segment.kind = SegmentKind::Declared;
+  } else if ((flags & SegPassive) == SegPassive) {
+    elem_segment.kind = SegmentKind::Passive;
+  } else {
+    elem_segment.kind = SegmentKind::Active;
+  }
   module_->AppendField(std::move(field));
+  return Result::Ok;
+}
+
+Result BinaryReaderIR::BeginInitExpr(ExprList* expr) {
+  PushLabel(LabelType::InitExpr, expr);
   return Result::Ok;
 }
 
 Result BinaryReaderIR::BeginElemSegmentInitExpr(Index index) {
   assert(index == module_->elem_segments.size() - 1);
   ElemSegment* segment = module_->elem_segments[index];
-  current_init_expr_ = &segment->offset;
+  return BeginInitExpr(&segment->offset);
+}
+
+Result BinaryReaderIR::EndInitExpr() {
   return Result::Ok;
 }
 
 Result BinaryReaderIR::EndElemSegmentInitExpr(Index index) {
-  current_init_expr_ = nullptr;
+  return EndInitExpr();
+}
+
+Result BinaryReaderIR::OnElemSegmentElemType(Index index, Type elem_type) {
+  assert(index == module_->elem_segments.size() - 1);
+  ElemSegment* segment = module_->elem_segments[index];
+  segment->elem_type = elem_type;
   return Result::Ok;
 }
 
-Result BinaryReaderIR::OnElemSegmentFunctionIndexCount(Index index,
-                                                       Index count) {
+Result BinaryReaderIR::OnElemSegmentElemExprCount(Index index, Index count) {
   assert(index == module_->elem_segments.size() - 1);
   ElemSegment* segment = module_->elem_segments[index];
   WABT_TRY
-  segment->vars.reserve(count);
+  segment->elem_exprs.reserve(count);
   WABT_CATCH_BAD_ALLOC
   return Result::Ok;
 }
 
-Result BinaryReaderIR::OnElemSegmentFunctionIndex(Index segment_index,
-                                                  Index func_index) {
+Result BinaryReaderIR::OnElemSegmentElemExpr_RefNull(Index segment_index,
+                                                     Type type) {
   assert(segment_index == module_->elem_segments.size() - 1);
   ElemSegment* segment = module_->elem_segments[segment_index];
-  segment->vars.emplace_back();
-  Var* var = &segment->vars.back();
-  *var = Var(func_index, GetLocation());
+  Location loc = GetLocation();
+  ExprList init_expr;
+  init_expr.push_back(MakeUnique<RefNullExpr>(type, loc));
+  segment->elem_exprs.push_back(std::move(init_expr));
+  return Result::Ok;
+}
+
+Result BinaryReaderIR::OnElemSegmentElemExpr_RefFunc(Index segment_index,
+                                                     Index func_index) {
+  assert(segment_index == module_->elem_segments.size() - 1);
+  ElemSegment* segment = module_->elem_segments[segment_index];
+  Location loc = GetLocation();
+  ExprList init_expr;
+  init_expr.push_back(MakeUnique<RefFuncExpr>(Var(func_index, loc), loc));
+  segment->elem_exprs.push_back(std::move(init_expr));
   return Result::Ok;
 }
 
@@ -942,10 +1310,17 @@ Result BinaryReaderIR::OnDataSegmentCount(Index count) {
   return Result::Ok;
 }
 
-Result BinaryReaderIR::BeginDataSegment(Index index, Index memory_index) {
+Result BinaryReaderIR::BeginDataSegment(Index index,
+                                        Index memory_index,
+                                        uint8_t flags) {
   auto field = MakeUnique<DataSegmentModuleField>(GetLocation());
   DataSegment& data_segment = field->data_segment;
   data_segment.memory_var = Var(memory_index, GetLocation());
+  if ((flags & SegPassive) == SegPassive) {
+    data_segment.kind = SegmentKind::Passive;
+  } else {
+    data_segment.kind = SegmentKind::Active;
+  }
   module_->AppendField(std::move(field));
   return Result::Ok;
 }
@@ -953,13 +1328,11 @@ Result BinaryReaderIR::BeginDataSegment(Index index, Index memory_index) {
 Result BinaryReaderIR::BeginDataSegmentInitExpr(Index index) {
   assert(index == module_->data_segments.size() - 1);
   DataSegment* segment = module_->data_segments[index];
-  current_init_expr_ = &segment->offset;
-  return Result::Ok;
+  return BeginInitExpr(&segment->offset);
 }
 
 Result BinaryReaderIR::EndDataSegmentInitExpr(Index index) {
-  current_init_expr_ = nullptr;
-  return Result::Ok;
+  return EndInitExpr();
 }
 
 Result BinaryReaderIR::OnDataSegmentData(Index index,
@@ -984,11 +1357,11 @@ Result BinaryReaderIR::OnFunctionNamesCount(Index count) {
   return Result::Ok;
 }
 
-static std::string MakeDollarName(string_view name) {
-  return std::string("$") + name.to_string();
+static std::string MakeDollarName(std::string_view name) {
+  return std::string("$") + std::string(name);
 }
 
-Result BinaryReaderIR::OnModuleName(string_view name) {
+Result BinaryReaderIR::OnModuleName(std::string_view name) {
   if (name.empty()) {
     return Result::Ok;
   }
@@ -997,20 +1370,153 @@ Result BinaryReaderIR::OnModuleName(string_view name) {
   return Result::Ok;
 }
 
-Result BinaryReaderIR::OnFunctionName(Index index, string_view name) {
+Result BinaryReaderIR::SetGlobalName(Index index, std::string_view name) {
   if (name.empty()) {
     return Result::Ok;
   }
-
-  Func* func = module_->funcs[index];
-  std::string dollar_name = MakeDollarName(name);
-  int counter = 1;
-  std::string orig_name = dollar_name;
-  while (module_->func_bindings.count(dollar_name) != 0) {
-    dollar_name = orig_name + "." + std::to_string(counter++);
+  if (index >= module_->globals.size()) {
+    PrintError("invalid global index: %" PRIindex, index);
+    return Result::Error;
   }
+  Global* glob = module_->globals[index];
+  std::string dollar_name =
+      GetUniqueName(&module_->global_bindings, MakeDollarName(name));
+  glob->name = dollar_name;
+  module_->global_bindings.emplace(dollar_name, Binding(index));
+  return Result::Ok;
+}
+
+Result BinaryReaderIR::SetFunctionName(Index index, std::string_view name) {
+  if (name.empty()) {
+    return Result::Ok;
+  }
+  if (index >= module_->funcs.size()) {
+    PrintError("invalid function index: %" PRIindex, index);
+    return Result::Error;
+  }
+  Func* func = module_->funcs[index];
+  std::string dollar_name =
+      GetUniqueName(&module_->func_bindings, MakeDollarName(name));
   func->name = dollar_name;
   module_->func_bindings.emplace(dollar_name, Binding(index));
+  return Result::Ok;
+}
+
+Result BinaryReaderIR::SetTableName(Index index, std::string_view name) {
+  if (name.empty()) {
+    return Result::Ok;
+  }
+  if (index >= module_->tables.size()) {
+    PrintError("invalid table index: %" PRIindex, index);
+    return Result::Error;
+  }
+  Table* table = module_->tables[index];
+  std::string dollar_name =
+      GetUniqueName(&module_->table_bindings, MakeDollarName(name));
+  table->name = dollar_name;
+  module_->table_bindings.emplace(dollar_name, Binding(index));
+  return Result::Ok;
+}
+
+Result BinaryReaderIR::SetDataSegmentName(Index index, std::string_view name) {
+  if (name.empty()) {
+    return Result::Ok;
+  }
+  if (index >= module_->data_segments.size()) {
+    PrintError("invalid data segment index: %" PRIindex, index);
+    return Result::Error;
+  }
+  DataSegment* segment = module_->data_segments[index];
+  std::string dollar_name =
+      GetUniqueName(&module_->data_segment_bindings, MakeDollarName(name));
+  segment->name = dollar_name;
+  module_->data_segment_bindings.emplace(dollar_name, Binding(index));
+  return Result::Ok;
+}
+
+Result BinaryReaderIR::SetElemSegmentName(Index index, std::string_view name) {
+  if (name.empty()) {
+    return Result::Ok;
+  }
+  if (index >= module_->elem_segments.size()) {
+    PrintError("invalid elem segment index: %" PRIindex, index);
+    return Result::Error;
+  }
+  ElemSegment* segment = module_->elem_segments[index];
+  std::string dollar_name =
+      GetUniqueName(&module_->elem_segment_bindings, MakeDollarName(name));
+  segment->name = dollar_name;
+  module_->elem_segment_bindings.emplace(dollar_name, Binding(index));
+  return Result::Ok;
+}
+
+Result BinaryReaderIR::SetMemoryName(Index index, std::string_view name) {
+  if (name.empty()) {
+    return Result::Ok;
+  }
+  if (index >= module_->memories.size()) {
+    PrintError("invalid memory index: %" PRIindex, index);
+    return Result::Error;
+  }
+  Memory* memory = module_->memories[index];
+  std::string dollar_name =
+      GetUniqueName(&module_->memory_bindings, MakeDollarName(name));
+  memory->name = dollar_name;
+  module_->memory_bindings.emplace(dollar_name, Binding(index));
+  return Result::Ok;
+}
+
+Result BinaryReaderIR::SetTagName(Index index, std::string_view name) {
+  if (name.empty()) {
+    return Result::Ok;
+  }
+  if (index >= module_->tags.size()) {
+    PrintError("invalid tag index: %" PRIindex, index);
+    return Result::Error;
+  }
+  Tag* tag = module_->tags[index];
+  std::string dollar_name =
+      GetUniqueName(&module_->tag_bindings, MakeDollarName(name));
+  tag->name = dollar_name;
+  module_->global_bindings.emplace(dollar_name, Binding(index));
+  return Result::Ok;
+}
+
+Result BinaryReaderIR::OnFunctionName(Index index, std::string_view name) {
+  return SetFunctionName(index, name);
+}
+
+Result BinaryReaderIR::OnNameEntry(NameSectionSubsection type,
+                                   Index index,
+                                   std::string_view name) {
+  switch (type) {
+    // TODO(sbc): remove OnFunctionName in favor of just using
+    // OnNameEntry so that this works
+    case NameSectionSubsection::Function:
+    case NameSectionSubsection::Local:
+    case NameSectionSubsection::Module:
+    case NameSectionSubsection::Label:
+    case NameSectionSubsection::Type:
+      break;
+    case NameSectionSubsection::Tag:
+      SetTagName(index, name);
+      break;
+    case NameSectionSubsection::Global:
+      SetGlobalName(index, name);
+      break;
+    case NameSectionSubsection::Table:
+      SetTableName(index, name);
+      break;
+    case NameSectionSubsection::DataSegment:
+      SetDataSegmentName(index, name);
+      break;
+    case NameSectionSubsection::Memory:
+      SetMemoryName(index, name);
+      break;
+    case NameSectionSubsection::ElemSegment:
+      SetElemSegmentName(index, name);
+      break;
+  }
   return Result::Ok;
 }
 
@@ -1027,79 +1533,144 @@ Result BinaryReaderIR::OnLocalNameLocalCount(Index index, Index count) {
   return Result::Ok;
 }
 
-Result BinaryReaderIR::OnInitExprF32ConstExpr(Index index, uint32_t value) {
-  Location loc = GetLocation();
-  current_init_expr_->push_back(
-      MakeUnique<ConstExpr>(Const::F32(value, loc), loc));
+Result BinaryReaderIR::BeginCodeMetadataSection(std::string_view name,
+                                                Offset size) {
+  current_metadata_name_ = name;
   return Result::Ok;
 }
 
-Result BinaryReaderIR::OnInitExprF64ConstExpr(Index index, uint64_t value) {
-  Location loc = GetLocation();
-  current_init_expr_->push_back(
-      MakeUnique<ConstExpr>(Const::F64(value, loc), loc));
+Result BinaryReaderIR::OnCodeMetadataFuncCount(Index count) {
   return Result::Ok;
 }
 
-Result BinaryReaderIR::OnInitExprV128ConstExpr(Index index, v128 value) {
-  Location loc = GetLocation();
-  current_init_expr_->push_back(
-      MakeUnique<ConstExpr>(Const::V128(value, loc), loc));
+Result BinaryReaderIR::OnCodeMetadataCount(Index function_index, Index count) {
+  code_metadata_queue_.push_func(module_->funcs[function_index]);
   return Result::Ok;
 }
 
-Result BinaryReaderIR::OnInitExprGetGlobalExpr(Index index,
-                                               Index global_index) {
-  Location loc = GetLocation();
-  current_init_expr_->push_back(
-      MakeUnique<GetGlobalExpr>(Var(global_index, loc), loc));
-  return Result::Ok;
-}
-
-Result BinaryReaderIR::OnInitExprI32ConstExpr(Index index, uint32_t value) {
-  Location loc = GetLocation();
-  current_init_expr_->push_back(
-      MakeUnique<ConstExpr>(Const::I32(value, loc), loc));
-  return Result::Ok;
-}
-
-Result BinaryReaderIR::OnInitExprI64ConstExpr(Index index, uint64_t value) {
-  Location loc = GetLocation();
-  current_init_expr_->push_back(
-      MakeUnique<ConstExpr>(Const::I64(value, loc), loc));
+Result BinaryReaderIR::OnCodeMetadata(Offset offset,
+                                      const void* data,
+                                      Address size) {
+  std::vector<uint8_t> data_(static_cast<const uint8_t*>(data),
+                             static_cast<const uint8_t*>(data) + size);
+  auto meta =
+      MakeUnique<CodeMetadataExpr>(current_metadata_name_, std::move(data_));
+  meta->loc.offset = offset;
+  code_metadata_queue_.push_metadata(std::move(meta));
   return Result::Ok;
 }
 
 Result BinaryReaderIR::OnLocalName(Index func_index,
                                    Index local_index,
-                                   string_view name) {
+                                   std::string_view name) {
   if (name.empty()) {
     return Result::Ok;
   }
 
   Func* func = module_->funcs[func_index];
-  Index num_params = func->GetNumParams();
-  BindingHash* bindings;
-  Index index;
-  if (local_index < num_params) {
-    /* param name */
-    bindings = &func->param_bindings;
-    index = local_index;
-  } else {
-    /* local name */
-    bindings = &func->local_bindings;
-    index = local_index - num_params;
-  }
-  bindings->emplace(MakeDollarName(name), Binding(index));
+  func->bindings.emplace(GetUniqueName(&func->bindings, MakeDollarName(name)),
+                         Binding(local_index));
   return Result::Ok;
 }
 
-Result BinaryReaderIR::OnExceptionType(Index index, TypeVector& sig) {
-  auto field = MakeUnique<ExceptionModuleField>(GetLocation());
-  Exception& except = field->except;
-  except.sig = sig;
+Result BinaryReaderIR::OnTagType(Index index, Index sig_index) {
+  auto field = MakeUnique<TagModuleField>(GetLocation());
+  Tag& tag = field->tag;
+  SetFuncDeclaration(&tag.decl, Var(sig_index, GetLocation()));
   module_->AppendField(std::move(field));
   return Result::Ok;
+}
+
+Result BinaryReaderIR::OnDataSymbol(Index index,
+                                    uint32_t flags,
+                                    std::string_view name,
+                                    Index segment,
+                                    uint32_t offset,
+                                    uint32_t size) {
+  if (name.empty()) {
+    return Result::Ok;
+  }
+  if (flags & WABT_SYMBOL_FLAG_UNDEFINED) {
+    // Refers to data in another file, `segment` not valid.
+    return Result::Ok;
+  }
+  if (offset) {
+    // If it is pointing into the data segment, then it's not really naming
+    // the whole segment.
+    return Result::Ok;
+  }
+  if (segment >= module_->data_segments.size()) {
+    PrintError("invalid data segment index: %" PRIindex, segment);
+    return Result::Error;
+  }
+  DataSegment* seg = module_->data_segments[segment];
+  std::string dollar_name =
+      GetUniqueName(&module_->data_segment_bindings, MakeDollarName(name));
+  seg->name = dollar_name;
+  module_->data_segment_bindings.emplace(dollar_name, Binding(segment));
+  return Result::Ok;
+}
+
+Result BinaryReaderIR::OnFunctionSymbol(Index index,
+                                        uint32_t flags,
+                                        std::string_view name,
+                                        Index func_index) {
+  if (name.empty()) {
+    return Result::Ok;
+  }
+  if (func_index >= module_->funcs.size()) {
+    PrintError("invalid function index: %" PRIindex, func_index);
+    return Result::Error;
+  }
+  Func* func = module_->funcs[func_index];
+  if (!func->name.empty()) {
+    // The name section has already named this function.
+    return Result::Ok;
+  }
+  std::string dollar_name =
+      GetUniqueName(&module_->func_bindings, MakeDollarName(name));
+  func->name = dollar_name;
+  module_->func_bindings.emplace(dollar_name, Binding(func_index));
+  return Result::Ok;
+}
+
+Result BinaryReaderIR::OnGlobalSymbol(Index index,
+                                      uint32_t flags,
+                                      std::string_view name,
+                                      Index global_index) {
+  return SetGlobalName(global_index, name);
+}
+
+Result BinaryReaderIR::OnSectionSymbol(Index index,
+                                       uint32_t flags,
+                                       Index section_index) {
+  return Result::Ok;
+}
+
+Result BinaryReaderIR::OnTagSymbol(Index index,
+                                   uint32_t flags,
+                                   std::string_view name,
+                                   Index tag_index) {
+  if (name.empty()) {
+    return Result::Ok;
+  }
+  if (tag_index >= module_->tags.size()) {
+    PrintError("invalid tag index: %" PRIindex, tag_index);
+    return Result::Error;
+  }
+  Tag* tag = module_->tags[tag_index];
+  std::string dollar_name =
+      GetUniqueName(&module_->tag_bindings, MakeDollarName(name));
+  tag->name = dollar_name;
+  module_->tag_bindings.emplace(dollar_name, Binding(tag_index));
+  return Result::Ok;
+}
+
+Result BinaryReaderIR::OnTableSymbol(Index index,
+                                     uint32_t flags,
+                                     std::string_view name,
+                                     Index table_index) {
+  return SetTableName(table_index, name);
 }
 
 }  // end anonymous namespace

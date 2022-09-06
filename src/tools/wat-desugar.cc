@@ -43,7 +43,7 @@ static bool s_debug_parsing;
 static Features s_features;
 
 static const char s_description[] =
-R"(  read a file in the wasm s-expression format and format it.
+    R"(  read a file in the wasm s-expression format and format it.
 
 examples:
   # write output to stdout
@@ -59,7 +59,6 @@ examples:
 static void ParseOptions(int argc, char** argv) {
   OptionParser parser("wat-desugar", s_description);
 
-  parser.AddHelpOption();
   parser.AddOption('o', "output", "FILE", "Output file for the formatted file",
                    [](const char* argument) { s_outfile = argument; });
   parser.AddOption("debug-parser", "Turn on debugging the parser of wat files",
@@ -85,16 +84,19 @@ int ProgramMain(int argc, char** argv) {
   InitStdio();
   ParseOptions(argc, argv);
 
-  std::unique_ptr<WastLexer> lexer(WastLexer::CreateFileLexer(s_infile));
-  if (!lexer) {
+  std::vector<uint8_t> file_data;
+  Result result = ReadFile(s_infile, &file_data);
+  if (Failed(result)) {
     WABT_FATAL("unable to read %s\n", s_infile);
   }
+
+  std::unique_ptr<WastLexer> lexer(WastLexer::CreateBufferLexer(
+      s_infile, file_data.data(), file_data.size()));
 
   Errors errors;
   std::unique_ptr<Script> script;
   WastParseOptions parse_wast_options(s_features);
-  Result result =
-      ParseWastScript(lexer.get(), &script, &errors, &parse_wast_options);
+  result = ParseWastScript(lexer.get(), &script, &errors, &parse_wast_options);
   auto line_finder = lexer->MakeLineFinder();
   FormatErrorsToFile(errors, Location::Type::Text);
 

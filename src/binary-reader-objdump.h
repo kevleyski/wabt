@@ -17,8 +17,8 @@
 #ifndef WABT_BINARY_READER_OBJDUMP_H_
 #define WABT_BINARY_READER_OBJDUMP_H_
 
+#include <map>
 #include <string>
-#include <vector>
 
 #include "src/common.h"
 #include "src/feature.h"
@@ -45,6 +45,7 @@ struct ObjdumpOptions {
   bool disassemble;
   bool debug;
   bool relocs;
+  bool section_offsets;
   ObjdumpMode mode;
   const char* filename;
   const char* section_name;
@@ -56,15 +57,35 @@ struct ObjdumpSymbol {
   Index index;
 };
 
+struct ObjdumpNames {
+  std::string_view Get(Index index) const;
+  void Set(Index index, std::string_view name);
+
+  std::map<Index, std::string> names;
+};
+
+struct ObjdumpLocalNames {
+  std::string_view Get(Index function_index, Index local_index) const;
+  void Set(Index function_index, Index local_index, std::string_view name);
+
+  std::map<std::pair<Index, Index>, std::string> names;
+};
+
 // read_binary_objdump uses this state to store information from previous runs
 // and use it to display more useful information.
 struct ObjdumpState {
   std::vector<Reloc> code_relocations;
   std::vector<Reloc> data_relocations;
-  std::vector<std::string> function_names;
-  std::vector<std::string> global_names;
-  std::vector<std::string> section_names;
+  ObjdumpNames type_names;
+  ObjdumpNames function_names;
+  ObjdumpNames global_names;
+  ObjdumpNames section_names;
+  ObjdumpNames tag_names;
+  ObjdumpNames segment_names;
+  ObjdumpNames table_names;
+  ObjdumpLocalNames local_names;
   std::vector<ObjdumpSymbol> symtab;
+  std::map<Index, Index> function_param_counts;
 };
 
 Result ReadBinaryObjdump(const uint8_t* data,

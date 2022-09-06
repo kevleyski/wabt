@@ -17,7 +17,7 @@
 #ifndef WABT_TOKEN_H_
 #define WABT_TOKEN_H_
 
-#include <string>
+#include <string_view>
 
 #include "src/literal.h"
 #include "src/opcode.h"
@@ -26,10 +26,10 @@ namespace wabt {
 
 struct Literal {
   Literal() = default;
-  Literal(LiteralType type, const std::string& text) : type(type), text(text) {}
+  Literal(LiteralType type, std::string_view text) : type(type), text(text) {}
 
   LiteralType type;
-  std::string text;
+  std::string_view text;
 };
 
 enum class TokenType {
@@ -42,7 +42,7 @@ enum class TokenType {
 #undef WABT_TOKEN_LAST
 
   First = First_Bare,
-  Last = Last_Type,
+  Last = Last_RefKind,
 };
 
 const char* GetTokenTypeName(TokenType);
@@ -71,29 +71,31 @@ inline bool IsTokenTypeLiteral(TokenType token_type) {
          token_type <= TokenType::Last_Literal;
 }
 
+inline bool IsTokenTypeRefKind(TokenType token_type) {
+  return token_type >= TokenType::First_RefKind &&
+         token_type <= TokenType::Last_RefKind;
+}
+
 struct Token {
   Token() : token_type_(TokenType::Invalid) {}
   Token(Location, TokenType);
   Token(Location, TokenType, Type);
-  Token(Location, TokenType, const std::string&);
+  Token(Location, TokenType, std::string_view);
   Token(Location, TokenType, Opcode);
   Token(Location, TokenType, const Literal&);
-  Token(const Token&);
-  Token(Token&&);
-  Token& operator=(const Token&);
-  Token& operator=(Token&&);
-  ~Token();
 
   Location loc;
 
   TokenType token_type() const { return token_type_; }
 
   bool HasText() const { return IsTokenTypeString(token_type_); }
-  bool HasType() const { return IsTokenTypeType(token_type_); }
+  bool HasType() const {
+    return IsTokenTypeType(token_type_) || IsTokenTypeRefKind(token_type_);
+  }
   bool HasOpcode() const { return IsTokenTypeOpcode(token_type_); }
   bool HasLiteral() const { return IsTokenTypeLiteral(token_type_); }
 
-  const std::string& text() const {
+  std::string_view text() const {
     assert(HasText());
     return text_;
   }
@@ -117,12 +119,10 @@ struct Token {
   std::string to_string_clamp(size_t max_length) const;
 
  private:
-  void Destroy();
-
   TokenType token_type_;
 
   union {
-    std::string text_;
+    std::string_view text_;
     Type type_;
     Opcode opcode_;
     Literal literal_;

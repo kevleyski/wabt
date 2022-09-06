@@ -30,7 +30,9 @@ Offset U32Leb128Length(uint32_t value);
 
 void WriteU32Leb128(Stream* stream, uint32_t value, const char* desc);
 void WriteS32Leb128(Stream* stream, uint32_t value, const char* desc);
+void WriteU64Leb128(Stream* stream, uint64_t value, const char* desc);
 void WriteS64Leb128(Stream* stream, uint64_t value, const char* desc);
+void WriteFixedS32Leb128(Stream* stream, uint32_t value, const char* desc);
 void WriteFixedU32Leb128(Stream* stream, uint32_t value, const char* desc);
 
 Offset WriteU32Leb128At(Stream* stream,
@@ -43,6 +45,7 @@ Offset WriteFixedU32Leb128At(Stream* stream,
                              uint32_t value,
                              const char* desc);
 
+Offset WriteU32Leb128Raw(uint8_t* data, uint8_t* end, uint32_t value);
 Offset WriteFixedU32Leb128Raw(uint8_t* data, uint8_t* end, uint32_t value);
 
 // Convenience functions for writing enums as LEB128s.
@@ -58,6 +61,7 @@ void WriteS32Leb128(Stream* stream, T value, const char* desc) {
 
 // Returns the length of the leb128.
 size_t ReadU32Leb128(const uint8_t* p, const uint8_t* end, uint32_t* out_value);
+size_t ReadU64Leb128(const uint8_t* p, const uint8_t* end, uint64_t* out_value);
 size_t ReadS32Leb128(const uint8_t* p, const uint8_t* end, uint32_t* out_value);
 size_t ReadS64Leb128(const uint8_t* p, const uint8_t* end, uint64_t* out_value);
 

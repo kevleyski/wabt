@@ -77,6 +77,8 @@ class Stream {
 
   void MoveData(size_t dst_offset, size_t src_offset, size_t size);
 
+  void Truncate(size_t size);
+
   void WABT_PRINTF_FORMAT(2, 3) Writef(const char* format, ...);
 
   // Specified as uint32_t instead of uint8_t so we can check if the value
@@ -106,7 +108,7 @@ class Stream {
   void WriteChar(char c,
                  const char* desc = nullptr,
                  PrintChars print_chars = PrintChars::No) {
-    WriteU8(c, desc, print_chars);
+    WriteU8(static_cast<unsigned char>(c), desc, print_chars);
   }
 
   // Dump memory as text, similar to the xxd format.
@@ -125,6 +127,8 @@ class Stream {
     WriteU8(static_cast<uint32_t>(value), desc, print_chars);
   }
 
+  virtual void Flush() {}
+
  protected:
   virtual Result WriteDataImpl(size_t offset,
                                const void* data,
@@ -132,11 +136,19 @@ class Stream {
   virtual Result MoveDataImpl(size_t dst_offset,
                               size_t src_offset,
                               size_t size) = 0;
+  virtual Result TruncateImpl(size_t size) = 0;
 
  private:
   template <typename T>
   void Write(const T& data, const char* desc, PrintChars print_chars) {
+#if WABT_BIG_ENDIAN
+    char tmp[sizeof(T)];
+    memcpy(tmp, &data, sizeof(tmp));
+    SwapBytesSized(tmp, sizeof(tmp));
+    WriteData(tmp, sizeof(tmp), desc, print_chars);
+#else
     WriteData(&data, sizeof(data), desc, print_chars);
+#endif
   }
 
   size_t offset_;
@@ -146,7 +158,8 @@ class Stream {
 };
 
 struct OutputBuffer {
-  Result WriteToFile(string_view filename) const;
+  Result WriteToFile(std::string_view filename) const;
+  Result WriteToStdout() const;
 
   void clear() { data.clear(); }
   size_t size() const { return data.size(); }
@@ -157,6 +170,7 @@ struct OutputBuffer {
 class MemoryStream : public Stream {
  public:
   WABT_DISALLOW_COPY_AND_ASSIGN(MemoryStream);
+  MemoryStream(MemoryStream&&) = default;
   explicit MemoryStream(Stream* log_stream = nullptr);
   explicit MemoryStream(std::unique_ptr<OutputBuffer>&&,
                         Stream* log_stream = nullptr);
@@ -166,7 +180,7 @@ class MemoryStream : public Stream {
 
   void Clear();
 
-  Result WriteToFile(string_view filename) {
+  Result WriteToFile(std::string_view filename) {
     return buf_->WriteToFile(filename);
   }
 
@@ -175,6 +189,7 @@ class MemoryStream : public Stream {
   Result MoveDataImpl(size_t dst_offset,
                       size_t src_offset,
                       size_t size) override;
+  Result TruncateImpl(size_t size) override;
 
  private:
   std::unique_ptr<OutputBuffer> buf_;
@@ -183,22 +198,25 @@ class MemoryStream : public Stream {
 class FileStream : public Stream {
  public:
   WABT_DISALLOW_COPY_AND_ASSIGN(FileStream);
-  explicit FileStream(string_view filename, Stream* log_stream = nullptr);
+  explicit FileStream(std::string_view filename, Stream* log_stream = nullptr);
   explicit FileStream(FILE*, Stream* log_stream = nullptr);
   FileStream(FileStream&&);
   FileStream& operator=(FileStream&&);
-  ~FileStream();
+  ~FileStream() override;
 
   static std::unique_ptr<FileStream> CreateStdout();
   static std::unique_ptr<FileStream> CreateStderr();
 
   bool is_open() const { return file_ != nullptr; }
 
+  void Flush() override;
+
  protected:
   Result WriteDataImpl(size_t offset, const void* data, size_t size) override;
   Result MoveDataImpl(size_t dst_offset,
                       size_t src_offset,
                       size_t size) override;
+  Result TruncateImpl(size_t size) override;
 
  private:
   FILE* file_;

@@ -15,21 +15,21 @@
     f32.const 2
     f32.const 3
     i32.const 1
-    select
+    select (result f32)
     drop
     f64.const 2
     f64.const 3
     i32.const 1
     select
     drop))
-(;; STDOUT ;;;
+(;; STDERR ;;;
 0000000: 0061 736d                                 ; WASM_BINARY_MAGIC
 0000004: 0100 0000                                 ; WASM_BINARY_VERSION
 ; section "Type" (1)
 0000008: 01                                        ; section code
 0000009: 00                                        ; section size (guess)
 000000a: 01                                        ; num types
-; type 0
+; func type 0
 000000b: 60                                        ; func
 000000c: 00                                        ; num params
 000000d: 00                                        ; num results
@@ -69,25 +69,29 @@
 000002d: 0000 4040                                 ; f32 literal
 0000031: 41                                        ; i32.const
 0000032: 01                                        ; i32 literal
-0000033: 1b                                        ; select
-0000034: 1a                                        ; drop
-0000035: 44                                        ; f64.const
-0000036: 0000 0000 0000 0040                       ; f64 literal
-000003e: 44                                        ; f64.const
-000003f: 0000 0000 0000 0840                       ; f64 literal
-0000047: 41                                        ; i32.const
-0000048: 01                                        ; i32 literal
-0000049: 1b                                        ; select
-000004a: 1a                                        ; drop
-000004b: 0b                                        ; end
-0000015: 36                                        ; FIXUP func body size
-0000013: 38                                        ; FIXUP section size
+0000033: 1c                                        ; select
+0000034: 01                                        ; num result types
+0000035: 7d                                        ; result type
+0000036: 1a                                        ; drop
+0000037: 44                                        ; f64.const
+0000038: 0000 0000 0000 0040                       ; f64 literal
+0000040: 44                                        ; f64.const
+0000041: 0000 0000 0000 0840                       ; f64 literal
+0000049: 41                                        ; i32.const
+000004a: 01                                        ; i32 literal
+000004b: 1b                                        ; select
+000004c: 1a                                        ; drop
+000004d: 0b                                        ; end
+0000015: 38                                        ; FIXUP func body size
+0000013: 3a                                        ; FIXUP section size
+;;; STDERR ;;)
+(;; STDOUT ;;;
 
 select.wasm:	file format wasm 0x1
 
 Code Disassembly:
 
-000015 func[0]:
+000016 func[0]:
  000017: 41 02                      | i32.const 2
  000019: 41 03                      | i32.const 3
  00001b: 41 01                      | i32.const 1
@@ -101,12 +105,12 @@ Code Disassembly:
  000027: 43 00 00 00 40             | f32.const 0x1p+1
  00002c: 43 00 00 40 40             | f32.const 0x1.8p+1
  000031: 41 01                      | i32.const 1
- 000033: 1b                         | select
- 000034: 1a                         | drop
- 000035: 44 00 00 00 00 00 00 00 40 | f64.const 0x1p+1
- 00003e: 44 00 00 00 00 00 00 08 40 | f64.const 0x1.8p+1
- 000047: 41 01                      | i32.const 1
- 000049: 1b                         | select
- 00004a: 1a                         | drop
- 00004b: 0b                         | end
+ 000033: 1c 01 7d                   | select f32
+ 000036: 1a                         | drop
+ 000037: 44 00 00 00 00 00 00 00 40 | f64.const 0x1p+1
+ 000040: 44 00 00 00 00 00 00 08 40 | f64.const 0x1.8p+1
+ 000049: 41 01                      | i32.const 1
+ 00004b: 1b                         | select
+ 00004c: 1a                         | drop
+ 00004d: 0b                         | end
 ;;; STDOUT ;;)

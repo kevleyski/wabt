@@ -70,6 +70,20 @@ void Stream::MoveData(size_t dst_offset, size_t src_offset, size_t size) {
   result_ = MoveDataImpl(dst_offset, src_offset, size);
 }
 
+void Stream::Truncate(size_t size) {
+  if (Failed(result_)) {
+    return;
+  }
+  if (log_stream_) {
+    log_stream_->Writef("; truncate to %" PRIzd " (0x%" PRIzx ")\n", size,
+                        size);
+  }
+  result_ = TruncateImpl(size);
+  if (Succeeded(result_) && offset_ > size) {
+    offset_ = size;
+  }
+}
+
 void Stream::Writef(const char* format, ...) {
   WABT_SNPRINTF_ALLOCA(buffer, length, format);
   WriteData(buffer, length);
@@ -118,8 +132,8 @@ void Stream::WriteMemoryDump(const void* start,
   }
 }
 
-Result OutputBuffer::WriteToFile(string_view filename) const {
-  std::string filename_str = filename.to_string();
+Result OutputBuffer::WriteToFile(std::string_view filename) const {
+  std::string filename_str(filename);
   FILE* file = fopen(filename_str.c_str(), "wb");
   if (!file) {
     ERROR("unable to open %s for writing\n", filename_str.c_str());
@@ -140,6 +154,18 @@ Result OutputBuffer::WriteToFile(string_view filename) const {
   }
 
   fclose(file);
+  return Result::Ok;
+}
+
+Result OutputBuffer::WriteToStdout() const {
+  if (data.empty()) {
+    return Result::Ok;
+  }
+  ssize_t bytes = fwrite(data.data(), 1, data.size(), stdout);
+  if (bytes < 0 || static_cast<size_t>(bytes) != data.size()) {
+    ERROR("failed to write %" PRIzd " bytes to stdout\n", data.size());
+    return Result::Error;
+  }
   return Result::Ok;
 }
 
@@ -195,9 +221,17 @@ Result MemoryStream::MoveDataImpl(size_t dst_offset,
   return Result::Ok;
 }
 
-FileStream::FileStream(string_view filename, Stream* log_stream)
+Result MemoryStream::TruncateImpl(size_t size) {
+  if (size > buf_->data.size()) {
+    return Result::Error;
+  }
+  buf_->data.resize(size);
+  return Result::Ok;
+}
+
+FileStream::FileStream(std::string_view filename, Stream* log_stream)
     : Stream(log_stream), file_(nullptr), offset_(0), should_close_(false) {
-  std::string filename_str = filename.to_string();
+  std::string filename_str(filename);
   file_ = fopen(filename_str.c_str(), "wb");
 
   // TODO(binji): this is pretty cheesy, should come up with a better API.
@@ -229,6 +263,12 @@ FileStream::~FileStream() {
   // We don't want to close existing files (stdout/sterr, for example).
   if (should_close_) {
     fclose(file_);
+  }
+}
+
+void FileStream::Flush() {
+  if (file_) {
+    fflush(file_);
   }
 }
 
@@ -264,7 +304,16 @@ Result FileStream::MoveDataImpl(size_t dst_offset,
     return Result::Ok;
   }
   // TODO(binji): implement if needed.
-  ERROR0("FileWriter::MoveData not implemented!\n");
+  ERROR0("FileStream::MoveDataImpl not implemented!\n");
+  return Result::Error;
+}
+
+Result FileStream::TruncateImpl(size_t size) {
+  if (!file_) {
+    return Result::Error;
+  }
+  // TODO(binji): implement if needed.
+  ERROR0("FileStream::TruncateImpl not implemented!\n");
   return Result::Error;
 }
 
