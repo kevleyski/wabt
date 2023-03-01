@@ -24,19 +24,6 @@ var features = {};
 
 WabtModule().then(function(wabt) {
 
-var FEATURES = [
-  'exceptions',
-  'mutable_globals',
-  'sat_float_to_int',
-  'sign_extension',
-  'simd',
-  'threads',
-  'multi_value',
-  'tail_call',
-  'bulk_memory',
-  'reference_types',
-];
-
 var kCompileMinMS = 100;
 var outputShowBase64 = false;
 var outputLog;
@@ -52,9 +39,9 @@ var base64El = document.getElementById('base64');
 var binaryBuffer = null;
 var binaryBlobUrl = null;
 
-for (var feature of FEATURES) {
-  var featureEl = document.getElementById(feature);
-  features[feature] = featureEl.checked;
+for (const [f, v] of Object.entries(wabt.FEATURES)) {
+  var featureEl = document.getElementById(f);
+  featureEl.checked = v;
   featureEl.addEventListener('change', event => {
     var feature = event.target.id;
     features[feature] = event.target.checked;
@@ -117,7 +104,9 @@ function compile() {
     var binaryOutput = module.toBinary({log: true, write_debug_names:true});
     outputLog = binaryOutput.log;
     binaryBuffer = binaryOutput.buffer;
-    outputBase64 = btoa(binaryBuffer);
+    // binaryBuffer is a Uint8Array, so we need to convert it to a string to use btoa
+    // https://stackoverflow.com/questions/12710001/how-to-convert-uint8-array-to-base64-encoded-string
+    outputBase64 = btoa(String.fromCharCode.apply(null, binaryBuffer));
 
     var blob = new Blob([binaryOutput.buffer]);
     if (binaryBlobUrl) {

@@ -74,6 +74,10 @@ def ProcessProposalDir(name, flags=None):
                os.path.join(PROPOSALS_DIR, name),
                'run-interp-spec',
                flags)
+    ProcessDir(os.path.join(WASM2C_SPEC_TEST_DIR, name),
+               os.path.join(PROPOSALS_DIR, name),
+               'run-spec-wasm2c',
+               flags)
 
 
 def main(args):
@@ -93,11 +97,12 @@ def main(args):
         'multi-memory': '--enable-multi-memory',
         'exception-handling': '--enable-exceptions',
         'extended-const': '--enable-extended-const',
+        'tail-call': '--enable-tail-call',
+        'relaxed-simd': '--enable-relaxed-simd',
     }
 
     unimplemented = set([
         'gc',
-        'tail-call',
         'function-references',
         'threads',
         'annotations',

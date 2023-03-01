@@ -19,18 +19,18 @@
 #include <cstdio>
 #include <cstdlib>
 
-#include "src/apply-names.h"
-#include "src/binary-reader-ir.h"
-#include "src/binary-reader.h"
-#include "src/error-formatter.h"
-#include "src/feature.h"
-#include "src/generate-names.h"
-#include "src/ir.h"
-#include "src/option-parser.h"
-#include "src/stream.h"
-#include "src/validator.h"
-#include "src/wast-lexer.h"
-#include "src/wat-writer.h"
+#include "wabt/apply-names.h"
+#include "wabt/binary-reader-ir.h"
+#include "wabt/binary-reader.h"
+#include "wabt/error-formatter.h"
+#include "wabt/feature.h"
+#include "wabt/generate-names.h"
+#include "wabt/ir.h"
+#include "wabt/option-parser.h"
+#include "wabt/stream.h"
+#include "wabt/validator.h"
+#include "wabt/wast-lexer.h"
+#include "wabt/wat-writer.h"
 
 using namespace wabt;
 
@@ -38,8 +38,10 @@ static int s_verbose;
 static std::string s_infile;
 static std::string s_outfile;
 static Features s_features;
-static WriteWatOptions s_write_wat_options;
-static bool s_generate_names = false;
+static bool s_generate_names;
+static bool s_fold_exprs;
+static bool s_inline_import;
+static bool s_inline_export;
 static bool s_read_debug_names = true;
 static bool s_fail_on_custom_section_error = true;
 static std::unique_ptr<FileStream> s_log_stream;
@@ -72,12 +74,12 @@ static void ParseOptions(int argc, char** argv) {
         ConvertBackslashToSlash(&s_outfile);
       });
   parser.AddOption('f', "fold-exprs", "Write folded expressions where possible",
-                   []() { s_write_wat_options.fold_exprs = true; });
+                   []() { s_fold_exprs = true; });
   s_features.AddOptions(&parser);
   parser.AddOption("inline-exports", "Write all exports inline",
-                   []() { s_write_wat_options.inline_export = true; });
+                   []() { s_inline_export = true; });
   parser.AddOption("inline-imports", "Write all imports inline",
-                   []() { s_write_wat_options.inline_import = true; });
+                   []() { s_inline_import = true; });
   parser.AddOption("no-debug-names", "Ignore debug names in the binary file",
                    []() { s_read_debug_names = false; });
   parser.AddOption("ignore-custom-section-errors",
@@ -132,9 +134,13 @@ int ProgramMain(int argc, char** argv) {
       }
 
       if (Succeeded(result)) {
+        WriteWatOptions wat_options(s_features);
+        wat_options.fold_exprs = s_fold_exprs;
+        wat_options.inline_import = s_inline_import;
+        wat_options.inline_export = s_inline_export;
         FileStream stream(!s_outfile.empty() ? FileStream(s_outfile)
                                              : FileStream(stdout));
-        result = WriteWat(&stream, &module, s_write_wat_options);
+        result = WriteWat(&stream, &module, wat_options);
       }
     }
     FormatErrorsToFile(errors, Location::Type::Binary);

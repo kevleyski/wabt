@@ -6,6 +6,10 @@
 
 #include "wasm-rt.h"
 
+#if defined(WASM_RT_ENABLE_SIMD)
+#include "simde/wasm/simd128.h"
+#endif
+
 /* TODO(binji): only use stdint.h types in header */
 #ifndef WASM_RT_CORE_TYPES_DEFINED
 #define WASM_RT_CORE_TYPES_DEFINED
@@ -19,17 +23,27 @@ typedef uint64_t u64;
 typedef int64_t s64;
 typedef float f32;
 typedef double f64;
+
+#if defined(WASM_RT_ENABLE_SIMD)
+typedef simde_v128_t v128;
+#endif
+
 #endif
 
 #ifdef __cplusplus
 extern "C" {
 #endif
 
-void Z_fac_init(void);
-void Z_fac_free(void);
+typedef struct w2c_fac {
+  char dummy_member;
+} w2c_fac;
+
+void wasm2c_fac_instantiate(w2c_fac*);
+void wasm2c_fac_free(w2c_fac*);
+wasm_rt_func_type_t wasm2c_fac_get_func_type(uint32_t param_count, uint32_t result_count, ...);
 
 /* export: 'fac' */
-extern u32 (*Z_facZ_fac)(u32);
+u32 w2c_fac_fac(w2c_fac*, u32);
 
 #ifdef __cplusplus
 }

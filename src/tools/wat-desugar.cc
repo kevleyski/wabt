@@ -20,26 +20,28 @@
 #include <cstdio>
 #include <cstdlib>
 
-#include "config.h"
+#include "wabt/config.h"
 
-#include "src/apply-names.h"
-#include "src/common.h"
-#include "src/error-formatter.h"
-#include "src/feature.h"
-#include "src/generate-names.h"
-#include "src/ir.h"
-#include "src/option-parser.h"
-#include "src/stream.h"
-#include "src/wast-parser.h"
-#include "src/wat-writer.h"
+#include "wabt/apply-names.h"
+#include "wabt/common.h"
+#include "wabt/error-formatter.h"
+#include "wabt/feature.h"
+#include "wabt/generate-names.h"
+#include "wabt/ir.h"
+#include "wabt/option-parser.h"
+#include "wabt/stream.h"
+#include "wabt/wast-parser.h"
+#include "wabt/wat-writer.h"
 
 using namespace wabt;
 
 static const char* s_infile;
 static const char* s_outfile;
-static WriteWatOptions s_write_wat_options;
-static bool s_generate_names;
 static bool s_debug_parsing;
+static bool s_fold_exprs;
+static bool s_generate_names;
+static bool s_inline_import;
+static bool s_inline_export;
 static Features s_features;
 
 static const char s_description[] =
@@ -64,11 +66,11 @@ static void ParseOptions(int argc, char** argv) {
   parser.AddOption("debug-parser", "Turn on debugging the parser of wat files",
                    []() { s_debug_parsing = true; });
   parser.AddOption('f', "fold-exprs", "Write folded expressions where possible",
-                   []() { s_write_wat_options.fold_exprs = true; });
+                   []() { s_fold_exprs = true; });
   parser.AddOption("inline-exports", "Write all exports inline",
-                   []() { s_write_wat_options.inline_export = true; });
+                   []() { s_inline_export = true; });
   parser.AddOption("inline-imports", "Write all imports inline",
-                   []() { s_write_wat_options.inline_import = true; });
+                   []() { s_inline_import = true; });
   s_features.AddOptions(&parser);
   parser.AddOption(
       "generate-names",
@@ -90,10 +92,10 @@ int ProgramMain(int argc, char** argv) {
     WABT_FATAL("unable to read %s\n", s_infile);
   }
 
-  std::unique_ptr<WastLexer> lexer(WastLexer::CreateBufferLexer(
-      s_infile, file_data.data(), file_data.size()));
-
   Errors errors;
+  std::unique_ptr<WastLexer> lexer(WastLexer::CreateBufferLexer(
+      s_infile, file_data.data(), file_data.size(), &errors));
+
   std::unique_ptr<Script> script;
   WastParseOptions parse_wast_options(s_features);
   result = ParseWastScript(lexer.get(), &script, &errors, &parse_wast_options);
@@ -115,8 +117,12 @@ int ProgramMain(int argc, char** argv) {
     }
 
     if (Succeeded(result)) {
+      WriteWatOptions wat_options(s_features);
+      wat_options.fold_exprs = s_fold_exprs;
+      wat_options.inline_import = s_inline_import;
+      wat_options.inline_export = s_inline_export;
       FileStream stream(s_outfile ? FileStream(s_outfile) : FileStream(stdout));
-      result = WriteWat(&stream, module, s_write_wat_options);
+      result = WriteWat(&stream, module, wat_options);
     }
   }
 

@@ -24,21 +24,21 @@
 #include <string>
 #include <vector>
 
-#include "src/binary-reader.h"
-#include "src/cast.h"
-#include "src/common.h"
-#include "src/error-formatter.h"
-#include "src/feature.h"
-#include "src/interp/binary-reader-interp.h"
-#include "src/interp/interp-util.h"
-#include "src/interp/interp.h"
-#include "src/literal.h"
-#include "src/option-parser.h"
-#include "src/stream.h"
-#include "src/string-util.h"
-#include "src/validator.h"
-#include "src/wast-lexer.h"
-#include "src/wast-parser.h"
+#include "wabt/binary-reader.h"
+#include "wabt/cast.h"
+#include "wabt/common.h"
+#include "wabt/error-formatter.h"
+#include "wabt/feature.h"
+#include "wabt/interp/binary-reader-interp.h"
+#include "wabt/interp/interp-util.h"
+#include "wabt/interp/interp.h"
+#include "wabt/literal.h"
+#include "wabt/option-parser.h"
+#include "wabt/stream.h"
+#include "wabt/string-util.h"
+#include "wabt/validator.h"
+#include "wabt/wast-lexer.h"
+#include "wabt/wast-parser.h"
 
 using namespace wabt;
 using namespace wabt::interp;
@@ -99,8 +99,8 @@ static void ParseOptions(int argc, char** argv) {
 namespace spectest {
 
 class Command;
-typedef std::unique_ptr<Command> CommandPtr;
-typedef std::vector<CommandPtr> CommandPtrVector;
+using CommandPtr = std::unique_ptr<Command>;
+using CommandPtrVector = std::vector<CommandPtr>;
 
 class Script {
  public:
@@ -155,7 +155,7 @@ class ActionCommandBase : public CommandMixin<TypeEnum> {
   Action action;
 };
 
-typedef ActionCommandBase<CommandType::Action> ActionCommand;
+using ActionCommand = ActionCommandBase<CommandType::Action>;
 
 class RegisterCommand : public CommandMixin<CommandType::Register> {
  public:
@@ -198,41 +198,39 @@ ExpectedValue GetLane(const ExpectedValue& ev, int lane) {
 
   v128 vec = ev.value.value.Get<v128>();
 
-  for (int lane = 0; lane < lane_count; ++lane) {
-    switch (ev.lane_type) {
-      case Type::I8:
-        result.nan[0] = ExpectedNan::None;
-        result.value.value.Set<u32>(vec.u8(lane));
-        break;
+  switch (ev.lane_type) {
+    case Type::I8:
+      result.nan[0] = ExpectedNan::None;
+      result.value.value.Set<u32>(vec.u8(lane));
+      break;
 
-      case Type::I16:
-        result.nan[0] = ExpectedNan::None;
-        result.value.value.Set<u32>(vec.u16(lane));
-        break;
+    case Type::I16:
+      result.nan[0] = ExpectedNan::None;
+      result.value.value.Set<u32>(vec.u16(lane));
+      break;
 
-      case Type::I32:
-        result.nan[0] = ExpectedNan::None;
-        result.value.value.Set<u32>(vec.u32(lane));
-        break;
+    case Type::I32:
+      result.nan[0] = ExpectedNan::None;
+      result.value.value.Set<u32>(vec.u32(lane));
+      break;
 
-      case Type::I64:
-        result.nan[0] = ExpectedNan::None;
-        result.value.value.Set<u64>(vec.u64(lane));
-        break;
+    case Type::I64:
+      result.nan[0] = ExpectedNan::None;
+      result.value.value.Set<u64>(vec.u64(lane));
+      break;
 
-      case Type::F32:
-        result.nan[0] = ev.nan[lane];
-        result.value.value.Set<f32>(Bitcast<f32>(vec.f32_bits(lane)));
-        break;
+    case Type::F32:
+      result.nan[0] = ev.nan[lane];
+      result.value.value.Set<f32>(Bitcast<f32>(vec.f32_bits(lane)));
+      break;
 
-      case Type::F64:
-        result.nan[0] = ev.nan[lane];
-        result.value.value.Set<f64>(Bitcast<f64>(vec.f64_bits(lane)));
-        break;
+    case Type::F64:
+      result.nan[0] = ev.nan[lane];
+      result.value.value.Set<f64>(Bitcast<f64>(vec.f64_bits(lane)));
+      break;
 
-      default:
-        WABT_UNREACHABLE;
-    }
+    default:
+      WABT_UNREACHABLE;
   }
   return result;
 }
@@ -247,35 +245,33 @@ TypedValue GetLane(const TypedValue& tv, Type lane_type, int lane) {
 
   v128 vec = tv.value.Get<v128>();
 
-  for (int lane = 0; lane < lane_count; ++lane) {
-    switch (lane_type) {
-      case Type::I8:
-        result.value.Set<u32>(vec.u8(lane));
-        break;
+  switch (lane_type) {
+    case Type::I8:
+      result.value.Set<u32>(vec.u8(lane));
+      break;
 
-      case Type::I16:
-        result.value.Set<u32>(vec.u16(lane));
-        break;
+    case Type::I16:
+      result.value.Set<u32>(vec.u16(lane));
+      break;
 
-      case Type::I32:
-        result.value.Set<u32>(vec.u32(lane));
-        break;
+    case Type::I32:
+      result.value.Set<u32>(vec.u32(lane));
+      break;
 
-      case Type::I64:
-        result.value.Set<u64>(vec.u64(lane));
-        break;
+    case Type::I64:
+      result.value.Set<u64>(vec.u64(lane));
+      break;
 
-      case Type::F32:
-        result.value.Set<f32>(Bitcast<f32>(vec.f32_bits(lane)));
-        break;
+    case Type::F32:
+      result.value.Set<f32>(Bitcast<f32>(vec.f32_bits(lane)));
+      break;
 
-      case Type::F64:
-        result.value.Set<f64>(Bitcast<f64>(vec.f64_bits(lane)));
-        break;
+    case Type::F64:
+      result.value.Set<f64>(Bitcast<f64>(vec.f64_bits(lane)));
+      break;
 
-      default:
-        WABT_UNREACHABLE;
-    }
+    default:
+      WABT_UNREACHABLE;
   }
   return result;
 }
@@ -284,6 +280,7 @@ class AssertReturnCommand : public CommandMixin<CommandType::AssertReturn> {
  public:
   Action action;
   std::vector<ExpectedValue> expected;
+  bool expect_either;
 };
 
 template <CommandType TypeEnum>
@@ -293,9 +290,9 @@ class AssertTrapCommandBase : public CommandMixin<TypeEnum> {
   std::string text;
 };
 
-typedef AssertTrapCommandBase<CommandType::AssertTrap> AssertTrapCommand;
-typedef AssertTrapCommandBase<CommandType::AssertExhaustion>
-    AssertExhaustionCommand;
+using AssertTrapCommand = AssertTrapCommandBase<CommandType::AssertTrap>;
+using AssertExhaustionCommand =
+    AssertTrapCommandBase<CommandType::AssertExhaustion>;
 
 template <CommandType TypeEnum>
 class AssertModuleCommand : public CommandMixin<TypeEnum> {
@@ -305,13 +302,13 @@ class AssertModuleCommand : public CommandMixin<TypeEnum> {
   std::string text;
 };
 
-typedef AssertModuleCommand<CommandType::AssertMalformed>
-    AssertMalformedCommand;
-typedef AssertModuleCommand<CommandType::AssertInvalid> AssertInvalidCommand;
-typedef AssertModuleCommand<CommandType::AssertUnlinkable>
-    AssertUnlinkableCommand;
-typedef AssertModuleCommand<CommandType::AssertUninstantiable>
-    AssertUninstantiableCommand;
+using AssertMalformedCommand =
+    AssertModuleCommand<CommandType::AssertMalformed>;
+using AssertInvalidCommand = AssertModuleCommand<CommandType::AssertInvalid>;
+using AssertUnlinkableCommand =
+    AssertModuleCommand<CommandType::AssertUnlinkable>;
+using AssertUninstantiableCommand =
+    AssertModuleCommand<CommandType::AssertUninstantiable>;
 
 class AssertExceptionCommand
     : public CommandMixin<CommandType::AssertException> {
@@ -1007,7 +1004,7 @@ wabt::Result JSONParser::ParseCommand(CommandPtr* out_command) {
   EXPECT("{");
   EXPECT_KEY("type");
   if (Match("\"module\"")) {
-    auto command = MakeUnique<ModuleCommand>();
+    auto command = std::make_unique<ModuleCommand>();
     EXPECT(",");
     CHECK_RESULT(ParseLine(&command->line));
     EXPECT(",");
@@ -1015,7 +1012,7 @@ wabt::Result JSONParser::ParseCommand(CommandPtr* out_command) {
     CHECK_RESULT(ParseFilename(&command->filename));
     *out_command = std::move(command);
   } else if (Match("\"action\"")) {
-    auto command = MakeUnique<ActionCommand>();
+    auto command = std::make_unique<ActionCommand>();
     EXPECT(",");
     CHECK_RESULT(ParseLine(&command->line));
     EXPECT(",");
@@ -1024,7 +1021,7 @@ wabt::Result JSONParser::ParseCommand(CommandPtr* out_command) {
     CHECK_RESULT(ParseActionResult());
     *out_command = std::move(command);
   } else if (Match("\"register\"")) {
-    auto command = MakeUnique<RegisterCommand>();
+    auto command = std::make_unique<RegisterCommand>();
     EXPECT(",");
     CHECK_RESULT(ParseLine(&command->line));
     EXPECT(",");
@@ -1032,7 +1029,7 @@ wabt::Result JSONParser::ParseCommand(CommandPtr* out_command) {
     PARSE_KEY_STRING_VALUE("as", &command->as);
     *out_command = std::move(command);
   } else if (Match("\"assert_malformed\"")) {
-    auto command = MakeUnique<AssertMalformedCommand>();
+    auto command = std::make_unique<AssertMalformedCommand>();
     EXPECT(",");
     CHECK_RESULT(ParseLine(&command->line));
     EXPECT(",");
@@ -1043,7 +1040,7 @@ wabt::Result JSONParser::ParseCommand(CommandPtr* out_command) {
     CHECK_RESULT(ParseModuleType(&command->type));
     *out_command = std::move(command);
   } else if (Match("\"assert_invalid\"")) {
-    auto command = MakeUnique<AssertInvalidCommand>();
+    auto command = std::make_unique<AssertInvalidCommand>();
     EXPECT(",");
     CHECK_RESULT(ParseLine(&command->line));
     EXPECT(",");
@@ -1054,7 +1051,7 @@ wabt::Result JSONParser::ParseCommand(CommandPtr* out_command) {
     CHECK_RESULT(ParseModuleType(&command->type));
     *out_command = std::move(command);
   } else if (Match("\"assert_unlinkable\"")) {
-    auto command = MakeUnique<AssertUnlinkableCommand>();
+    auto command = std::make_unique<AssertUnlinkableCommand>();
     EXPECT(",");
     CHECK_RESULT(ParseLine(&command->line));
     EXPECT(",");
@@ -1065,7 +1062,7 @@ wabt::Result JSONParser::ParseCommand(CommandPtr* out_command) {
     CHECK_RESULT(ParseModuleType(&command->type));
     *out_command = std::move(command);
   } else if (Match("\"assert_uninstantiable\"")) {
-    auto command = MakeUnique<AssertUninstantiableCommand>();
+    auto command = std::make_unique<AssertUninstantiableCommand>();
     EXPECT(",");
     CHECK_RESULT(ParseLine(&command->line));
     EXPECT(",");
@@ -1076,17 +1073,22 @@ wabt::Result JSONParser::ParseCommand(CommandPtr* out_command) {
     CHECK_RESULT(ParseModuleType(&command->type));
     *out_command = std::move(command);
   } else if (Match("\"assert_return\"")) {
-    auto command = MakeUnique<AssertReturnCommand>();
+    auto command = std::make_unique<AssertReturnCommand>();
     EXPECT(",");
     CHECK_RESULT(ParseLine(&command->line));
     EXPECT(",");
     CHECK_RESULT(ParseAction(&command->action));
     EXPECT(",");
-    EXPECT_KEY("expected");
+    if (Match("\"either\"")) {
+      EXPECT(":");
+      command->expect_either = true;
+    } else {
+      EXPECT_KEY("expected");
+    }
     CHECK_RESULT(ParseExpectedValues(&command->expected));
     *out_command = std::move(command);
   } else if (Match("\"assert_trap\"")) {
-    auto command = MakeUnique<AssertTrapCommand>();
+    auto command = std::make_unique<AssertTrapCommand>();
     EXPECT(",");
     CHECK_RESULT(ParseLine(&command->line));
     EXPECT(",");
@@ -1097,7 +1099,7 @@ wabt::Result JSONParser::ParseCommand(CommandPtr* out_command) {
     CHECK_RESULT(ParseActionResult());
     *out_command = std::move(command);
   } else if (Match("\"assert_exhaustion\"")) {
-    auto command = MakeUnique<AssertExhaustionCommand>();
+    auto command = std::make_unique<AssertExhaustionCommand>();
     EXPECT(",");
     CHECK_RESULT(ParseLine(&command->line));
     EXPECT(",");
@@ -1112,7 +1114,7 @@ wabt::Result JSONParser::ParseCommand(CommandPtr* out_command) {
       PrintError("invalid command: exceptions not allowed");
       return wabt::Result::Error;
     }
-    auto command = MakeUnique<AssertExceptionCommand>();
+    auto command = std::make_unique<AssertExceptionCommand>();
     EXPECT(",");
     CHECK_RESULT(ParseLine(&command->line));
     EXPECT(",");
@@ -1230,6 +1232,7 @@ CommandRunner::CommandRunner() : store_(s_features) {
   } const print_funcs[] = {
       {"print", interp::FuncType{{}, {}}},
       {"print_i32", interp::FuncType{{ValueType::I32}, {}}},
+      {"print_i64", interp::FuncType{{ValueType::I64}, {}}},
       {"print_f32", interp::FuncType{{ValueType::F32}, {}}},
       {"print_f64", interp::FuncType{{ValueType::F64}, {}}},
       {"print_i32_f32", interp::FuncType{{ValueType::I32, ValueType::F32}, {}}},
@@ -1386,9 +1389,9 @@ wabt::Result CommandRunner::ReadInvalidTextModule(
     const std::string& header) {
   std::vector<uint8_t> file_data;
   wabt::Result result = ReadFile(module_filename, &file_data);
-  std::unique_ptr<WastLexer> lexer = WastLexer::CreateBufferLexer(
-      module_filename, file_data.data(), file_data.size());
   Errors errors;
+  std::unique_ptr<WastLexer> lexer = WastLexer::CreateBufferLexer(
+      module_filename, file_data.data(), file_data.size(), &errors);
   if (Succeeded(result)) {
     std::unique_ptr<wabt::Module> module;
     WastParseOptions options(s_features);
@@ -1749,11 +1752,14 @@ wabt::Result CommandRunner::CheckAssertReturnResult(
 
         if (Failed(CheckAssertReturnResult(command, index, lane_expected,
                                            lane_actual, false))) {
-          PrintError(command->line,
-                     "mismatch in lane %u of result %u of assert_return: "
-                     "expected %s, got %s",
-                     lane, index, ExpectedValueToString(lane_expected).c_str(),
-                     TypedValueToString(lane_actual).c_str());
+          if (print_error) {
+            PrintError(command->line,
+                       "mismatch in lane %u of result %u of assert_return: "
+                       "expected %s, got %s",
+                       lane, index,
+                       ExpectedValueToString(lane_expected).c_str(),
+                       TypedValueToString(lane_actual).c_str());
+          }
           ok = false;
         }
       }
@@ -1794,23 +1800,46 @@ wabt::Result CommandRunner::OnAssertReturnCommand(
     return wabt::Result::Error;
   }
 
-  if (action_result.values.size() != command->expected.size()) {
+  if (command->expect_either) {
+    if (action_result.values.size() != 1) {
+      PrintError(command->line,
+                 "\"either\" requires single result but got %" PRIzd,
+                 action_result.values.size());
+      return wabt::Result::Error;
+    }
+
+    TypedValue actual{action_result.types[0], action_result.values[0]};
+    for (size_t i = 0; i < command->expected.size(); ++i) {
+      const ExpectedValue& expected = command->expected[i];
+      if (Succeeded(
+              CheckAssertReturnResult(command, i, expected, actual, false))) {
+        return wabt::Result::Ok;
+      }
+    }
     PrintError(command->line,
-               "result length mismatch in assert_return: expected %" PRIzd
-               ", got %" PRIzd,
-               command->expected.size(), action_result.values.size());
+               "mismatch in result of assert_return: expected %s (%" PRIzd
+               " alternatives), got %s",
+               ExpectedValueToString(command->expected[0]).c_str(),
+               command->expected.size(), TypedValueToString(actual).c_str());
     return wabt::Result::Error;
+  } else {
+    if (action_result.values.size() != command->expected.size()) {
+      PrintError(command->line,
+                 "result length mismatch in assert_return: expected %" PRIzd
+                 ", got %" PRIzd,
+                 command->expected.size(), action_result.values.size());
+      return wabt::Result::Error;
+    }
+
+    wabt::Result result = wabt::Result::Ok;
+    for (size_t i = 0; i < action_result.values.size(); ++i) {
+      const ExpectedValue& expected = command->expected[i];
+      TypedValue actual{action_result.types[i], action_result.values[i]};
+
+      result |= CheckAssertReturnResult(command, i, expected, actual, true);
+    }
+    return result;
   }
-
-  wabt::Result result = wabt::Result::Ok;
-  for (size_t i = 0; i < action_result.values.size(); ++i) {
-    const ExpectedValue& expected = command->expected[i];
-    TypedValue actual{action_result.types[i], action_result.values[i]};
-
-    result |= CheckAssertReturnResult(command, i, expected, actual, true);
-  }
-
-  return result;
 }
 
 wabt::Result CommandRunner::OnAssertTrapCommand(

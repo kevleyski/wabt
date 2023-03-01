@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-#include "src/wat-writer.h"
+#include "wabt/wat-writer.h"
 
 #include <algorithm>
 #include <array>
@@ -27,16 +27,16 @@
 #include <string>
 #include <vector>
 
-#include "src/cast.h"
-#include "src/common.h"
-#include "src/expr-visitor.h"
-#include "src/ir-util.h"
-#include "src/ir.h"
-#include "src/literal.h"
-#include "src/stream.h"
+#include "wabt/cast.h"
+#include "wabt/common.h"
+#include "wabt/expr-visitor.h"
+#include "wabt/ir-util.h"
+#include "wabt/ir.h"
+#include "wabt/literal.h"
+#include "wabt/stream.h"
 
 #define WABT_TRACING 0
-#include "src/tracing.h"
+#include "wabt/tracing.h"
 
 #define INDENT_SIZE 2
 #define NO_FORCE_NEWLINE 0
@@ -1435,7 +1435,15 @@ void WatWriter::WriteTable(const Table& table) {
 
 void WatWriter::WriteElemSegment(const ElemSegment& segment) {
   WriteOpenSpace("elem");
-  WriteNameOrIndex(segment.name, elem_segment_index_, NextChar::Space);
+  // The first name we encounter here, pre-bulk-memory, was intended to refer to
+  // the table while segment names were not supported at all.  For this reason
+  // we cannot emit a segment name here without bulk-memory enabled, otherwise
+  // the name will be assumed to be the name of a table and parsing will fail.
+  if (options_.features.bulk_memory_enabled()) {
+    WriteNameOrIndex(segment.name, elem_segment_index_, NextChar::Space);
+  } else {
+    Writef("(;%u;)", elem_segment_index_);
+  }
 
   uint8_t flags = segment.GetFlags(&module);
 

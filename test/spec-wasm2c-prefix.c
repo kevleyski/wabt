@@ -100,11 +100,31 @@ static void error(const char* file, int line, const char* format, ...) {
     }                                                                    \
   } while (0)
 
+#define ASSERT_RETURN_FUNCREF(f, expected)                                \
+  do {                                                                    \
+    g_tests_run++;                                                        \
+    int trap_code = wasm_rt_impl_try();                                   \
+    if (trap_code) {                                                      \
+      error(__FILE__, __LINE__, #f " trapped (%s).\n",                    \
+            wasm_rt_strerror(trap_code));                                 \
+    } else {                                                              \
+      wasm_rt_funcref_t actual = f;                                       \
+      if (is_equal_wasm_rt_funcref_t(actual, expected)) {                 \
+        g_tests_passed++;                                                 \
+      } else {                                                            \
+        error(__FILE__, __LINE__,                                         \
+              "in " #f ": mismatch between expected and actual funcref"); \
+      }                                                                   \
+    }                                                                     \
+  } while (0)
+
 #define ASSERT_RETURN_NAN_T(type, itype, fmt, f, kind)                        \
   do {                                                                        \
     g_tests_run++;                                                            \
-    if (wasm_rt_impl_try() != 0) {                                            \
-      error(__FILE__, __LINE__, #f " trapped.\n");                            \
+    int trap_code = wasm_rt_impl_try();                                       \
+    if (trap_code) {                                                          \
+      error(__FILE__, __LINE__, #f " trapped (%s).\n",                        \
+            wasm_rt_strerror(trap_code));                                     \
     } else {                                                                  \
       type actual = f;                                                        \
       itype iactual;                                                          \
@@ -122,25 +142,31 @@ static void error(const char* file, int line, const char* format, ...) {
 
 #define MULTI_T_UNPACK_(...) __VA_ARGS__
 #define MULTI_T_UNPACK(arg) MULTI_T_UNPACK_ arg
-#define MULTI_i32 "%u"
-#define MULTI_i64 "%" PRIu64
-#define MULTI_f32 "%.9g"
-#define MULTI_f64 "%.17g"
-#define ASSERT_RETURN_MULTI_T(type, fmt, f, compare, expected, found)    \
-  do {                                                                   \
-    g_tests_run++;                                                       \
-    if (wasm_rt_impl_try() != 0) {                                       \
-      error(__FILE__, __LINE__, #f " trapped.\n");                       \
-    } else {                                                             \
-      type actual = f;                                                   \
-      if (compare) {                                                     \
-        g_tests_passed++;                                                \
-      } else {                                                           \
-        error(__FILE__, __LINE__,                                        \
-              "in " #f ": expected " fmt ", got " fmt ".\n",             \
-              MULTI_T_UNPACK(expected), MULTI_T_UNPACK(found));          \
-      }                                                                  \
-    }                                                                    \
+#define MULTI_i8 "%su "
+#define MULTI_i16 "%su "
+#define MULTI_i32 "%u "
+#define MULTI_i64 "%" PRIu64 " "
+#define MULTI_f32 "%.9g "
+#define MULTI_f64 "%.17g "
+#define MULTI_str "%s "
+#define ASSERT_RETURN_MULTI_T(type, fmt_expected, fmt_got, f, compare,        \
+                              expected, found)                                \
+  do {                                                                        \
+    g_tests_run++;                                                            \
+    int trap_code = wasm_rt_impl_try();                                       \
+    if (trap_code) {                                                          \
+      error(__FILE__, __LINE__, #f " trapped (%s).\n",                        \
+            wasm_rt_strerror(trap_code));                                     \
+    } else {                                                                  \
+      type actual = f;                                                        \
+      if (compare) {                                                          \
+        g_tests_passed++;                                                     \
+      } else {                                                                \
+        error(__FILE__, __LINE__,                                             \
+              "in " #f ": expected <" fmt_expected ">, got <" fmt_got ">.\n", \
+              MULTI_T_UNPACK(expected), MULTI_T_UNPACK(found));               \
+      }                                                                       \
+    }                                                                         \
   } while (0)
 
 
@@ -148,6 +174,8 @@ static void error(const char* file, int line, const char* format, ...) {
 #define ASSERT_RETURN_I64(f, expected) ASSERT_RETURN_T(u64, PRIu64, f, expected)
 #define ASSERT_RETURN_F32(f, expected) ASSERT_RETURN_T(f32, ".9g", f, expected)
 #define ASSERT_RETURN_F64(f, expected) ASSERT_RETURN_T(f64, ".17g", f, expected)
+#define ASSERT_RETURN_EXTERNREF(f, expected) \
+  ASSERT_RETURN_T(wasm_rt_externref_t, "p", f, expected);
 
 #define ASSERT_RETURN_CANONICAL_NAN_F32(f) \
   ASSERT_RETURN_NAN_T(f32, u32, "08x", f, canonical)
@@ -158,6 +186,14 @@ static void error(const char* file, int line, const char* format, ...) {
 #define ASSERT_RETURN_ARITHMETIC_NAN_F64(f) \
   ASSERT_RETURN_NAN_T(f64, u64, "016x", f, arithmetic)
 
+static bool is_equal_u8(u8 x, u8 y) {
+  return x == y;
+}
+
+static bool is_equal_u16(u16 x, u16 y) {
+  return x == y;
+}
+
 static bool is_equal_u32(u32 x, u32 y) {
   return x == y;
 }
@@ -166,21 +202,49 @@ static bool is_equal_u64(u64 x, u64 y) {
   return x == y;
 }
 
+#define is_equal_i8 is_equal_u8
+#define is_equal_i16 is_equal_u16
 #define is_equal_i32 is_equal_u32
 #define is_equal_i64 is_equal_u64
 
-static bool is_equal_f32(f32 x, f32 y) {
-  u32 ux, uy;
+static bool is_equal_wasm_rt_externref_t(wasm_rt_externref_t x,
+                                         wasm_rt_externref_t y) {
+  return x == y;
+}
+
+static inline bool is_equal_wasm_rt_func_type_t(const wasm_rt_func_type_t a,
+                                                const wasm_rt_func_type_t b) {
+  return (a == b) || (a && b && !memcmp(a, b, 32));
+}
+
+static bool is_equal_wasm_rt_funcref_t(wasm_rt_funcref_t x,
+                                       wasm_rt_funcref_t y) {
+  return is_equal_wasm_rt_func_type_t(x.func_type, y.func_type) &&
+         (x.func == y.func) && (x.module_instance == y.module_instance);
+}
+
+wasm_rt_externref_t spectest_make_externref(uintptr_t x) {
+  return (wasm_rt_externref_t)(x + 1);  // externref(0) is not null
+}
+
+static u32 f32_bits(f32 x) {
+  u32 ux;
   memcpy(&ux, &x, sizeof(ux));
-  memcpy(&uy, &y, sizeof(uy));
-  return ux == uy;
+  return ux;
+}
+
+static u64 f64_bits(f64 x) {
+  u64 ux;
+  memcpy(&ux, &x, sizeof(ux));
+  return ux;
+}
+
+static bool is_equal_f32(f32 x, f32 y) {
+  return f32_bits(x) == f32_bits(y);
 }
 
 static bool is_equal_f64(f64 x, f64 y) {
-  u64 ux, uy;
-  memcpy(&ux, &x, sizeof(ux));
-  memcpy(&uy, &y, sizeof(uy));
-  return ux == uy;
+  return f64_bits(x) == f64_bits(y);
 }
 
 static f32 make_nan_f32(u32 x) {
@@ -213,59 +277,82 @@ static bool is_arithmetic_nan_f64(u64 x) {
   return (x & 0x7ff8000000000000) == 0x7ff8000000000000;
 }
 
+typedef struct w2c_spectest {
+  wasm_rt_funcref_table_t spectest_table;
+  wasm_rt_memory_t spectest_memory;
+  uint32_t spectest_global_i32;
+  uint64_t spectest_global_i64;
+  float spectest_global_f32;
+  double spectest_global_f64;
+} w2c_spectest;
+
+static w2c_spectest spectest_instance;
 
 /*
  * spectest implementations
  */
-static void spectest_print(void) {
+void w2c_spectest_print(w2c_spectest* instance) {
   printf("spectest.print()\n");
 }
 
-static void spectest_print_i32(uint32_t i) {
+void w2c_spectest_print_i32(w2c_spectest* instance, uint32_t i) {
   printf("spectest.print_i32(%d)\n", i);
 }
 
-static void spectest_print_f32(float f) {
+void w2c_spectest_print_i64(w2c_spectest* instance, uint64_t i) {
+  printf("spectest.print_i64(%" PRIu64 ")\n", i);
+}
+
+void w2c_spectest_print_f32(w2c_spectest* instance, float f) {
   printf("spectest.print_f32(%g)\n", f);
 }
 
-static void spectest_print_i32_f32(uint32_t i, float f) {
+void w2c_spectest_print_i32_f32(w2c_spectest* instance, uint32_t i, float f) {
   printf("spectest.print_i32_f32(%d %g)\n", i, f);
 }
 
-static void spectest_print_f64(double d) {
+void w2c_spectest_print_f64(w2c_spectest* instance, double d) {
   printf("spectest.print_f64(%g)\n", d);
 }
 
-static void spectest_print_f64_f64(double d1, double d2) {
+void w2c_spectest_print_f64_f64(w2c_spectest* instance, double d1, double d2) {
   printf("spectest.print_f64_f64(%g %g)\n", d1, d2);
 }
 
-static wasm_rt_table_t spectest_table;
-static wasm_rt_memory_t spectest_memory;
-static uint32_t spectest_global_i32 = 666;
-static uint64_t spectest_global_i64 = 666l;
-
-void (*Z_spectestZ_print)(void) = &spectest_print;
-void (*Z_spectestZ_print_i32)(uint32_t) = &spectest_print_i32;
-void (*Z_spectestZ_print_f32)(float) = &spectest_print_f32;
-void (*Z_spectestZ_print_i32_f32)(uint32_t, float) = &spectest_print_i32_f32;
-void (*Z_spectestZ_print_f64)(double) = &spectest_print_f64;
-void (*Z_spectestZ_print_f64_f64)(double, double) = &spectest_print_f64_f64;
-wasm_rt_table_t* Z_spectestZ_table = &spectest_table;
-wasm_rt_memory_t* Z_spectestZ_memory = &spectest_memory;
-uint32_t* Z_spectestZ_global_i32 = &spectest_global_i32;
-uint64_t* Z_spectestZ_global_i64 = &spectest_global_i64;
-
-static void init_spectest_module(void) {
-  wasm_rt_allocate_memory(&spectest_memory, 1, 2);
-  wasm_rt_allocate_table(&spectest_table, 10, 20);
+wasm_rt_funcref_table_t* w2c_spectest_table(w2c_spectest* instance) {
+  return &instance->spectest_table;
 }
 
+wasm_rt_memory_t* w2c_spectest_memory(w2c_spectest* instance) {
+  return &instance->spectest_memory;
+}
+
+uint32_t* w2c_spectest_global_i32(w2c_spectest* instance) {
+  return &instance->spectest_global_i32;
+}
+
+uint64_t* w2c_spectest_global_i64(w2c_spectest* instance) {
+  return &instance->spectest_global_i64;
+}
+
+float* w2c_spectest_global_f32(w2c_spectest* instance) {
+  return &instance->spectest_global_f32;
+}
+
+double* w2c_spectest_global_f64(w2c_spectest* instance) {
+  return &instance->spectest_global_f64;
+}
+
+static void init_spectest_module(w2c_spectest* instance) {
+  instance->spectest_global_i32 = 666;
+  instance->spectest_global_i64 = 666l;
+  wasm_rt_allocate_memory(&instance->spectest_memory, 1, 2, false);
+  wasm_rt_allocate_funcref_table(&instance->spectest_table, 10, 20);
+}
 
 int main(int argc, char** argv) {
   wasm_rt_init();
-  init_spectest_module();
+  init_spectest_module(&spectest_instance);
   run_spec_tests();
   printf("%u/%u tests passed.\n", g_tests_passed, g_tests_run);
   wasm_rt_free();

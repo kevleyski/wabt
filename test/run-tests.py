@@ -39,7 +39,7 @@ DEFAULT_TIMEOUT = 120    # seconds
 SLOW_TIMEOUT_MULTIPLIER = 3
 
 if sys.byteorder == 'big':
-    wasm2c_args = ['--cflags=-DWABT_BIG_ENDIAN']
+    wasm2c_args = ['--cflags=-DWABT_BIG_ENDIAN=1']
 else:
     wasm2c_args = []
 
@@ -153,6 +153,10 @@ TOOLS = {
             '%(out_dir)s',
         ] + wasm2c_args),
         ('VERBOSE-ARGS', ['--print-cmd', '-v']),
+    ],
+    'run-wasm2c': [
+        ('RUN', '%(wat2wasm)s %(in_file)s -o %(temp_file)s.wasm'),
+        ('RUN', '%(wasm2c)s -n test %(temp_file)s.wasm'),
     ],
     'run-wasm-decompile': [
         ('RUN', '%(wat2wasm)s --enable-all %(in_file)s -o %(temp_file)s.wasm'),
@@ -380,6 +384,7 @@ class TestInfo(object):
         self.slow = False
         self.skip = False
         self.is_roundtrip = False
+        self.is_wasm2c = False
 
     def CreateRoundtripInfo(self, fold_exprs):
         if self.tool not in ROUNDTRIP_TOOLS:
@@ -449,6 +454,7 @@ class TestInfo(object):
         if tool not in TOOLS:
             raise Error('Unknown tool: %s' % tool)
         self.tool = tool
+        self.is_wasm2c = self.tool == 'run-spec-wasm2c'
         for tool_key, tool_value in TOOLS[tool]:
             self.ParseDirective(tool_key, tool_value)
 
@@ -662,7 +668,7 @@ class Status(object):
         assert(self.isatty)
         total_duration = time.time() - self.start_time
         name = info.GetName() if info else ''
-        if (self.total - self.skipped):
+        if self.total - self.skipped:
             percent = 100 * (self.passed + self.failed) / (self.total - self.skipped)
         else:
             percent = 100
@@ -780,6 +786,11 @@ def HandleTestResult(status, info, result, rebase=False):
                 status.Passed(info, result.duration)
         else:
             if result.Failed():
+                if result.GetLastFailure().returncode == 3:
+                    # run-spec-wasm2c.py returns 3 to signal that the test
+                    # should be skipped.
+                    status.Skipped(info)
+                    return
                 # This test has already failed, but diff it anyway.
                 last_failure = result.GetLastFailure()
                 msg = 'expected error code %d, got %d.' % (

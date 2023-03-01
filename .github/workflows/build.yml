@@ -50,7 +50,7 @@ jobs:
     - name: mkdir
       run: mkdir -p out
     - name: cmake
-      run: cmake .. -G Ninja -DWERROR=ON -Werror=dev
+      run: cmake .. -G Ninja -DWITH_WASI=ON -DWERROR=ON -Werror=dev
       working-directory: out
       if: matrix.os != 'windows-latest'
     - name: cmake (windows)
@@ -79,12 +79,35 @@ jobs:
         docker exec emscripten emcmake cmake .
         docker exec emscripten make -j 2 VERBOSE=1
 
-  build-asan:
-    name: asan
-    runs-on: ubuntu-latest
+  sanitize:
+    name: sanitize
+    runs-on: ubuntu-22.04
     env:
       USE_NINJA: "1"
-      WASM2C_CFLAGS: "-fsanitize=address"
+      CC: "clang"
+      WASM2C_CFLAGS: "-march=x86-64-v2" # currently required for SIMDe to pass some tests on x86-64
+    strategy:
+      matrix:
+        sanitizer: [asan, ubsan]
+        type: [debug, release]
+    steps:
+    - uses: actions/setup-python@v1
+      with:
+        python-version: '3.x'
+    - uses: actions/checkout@v1
+      with:
+        submodules: true
+    - run: sudo apt-get install ninja-build
+    - run: make clang-${{ matrix.type }}-${{ matrix.sanitizer }}
+    - run: make test-clang-${{ matrix.type }}-${{ matrix.sanitizer }}
+
+  build-wasm2c-memchecked:
+    name: wasm2c-memchecked
+    runs-on: ubuntu-22.04
+    env:
+      USE_NINJA: "1"
+      CC: "clang" # used by the wasm2c tests
+      WASM2C_CFLAGS: "-march=x86-64-v2 -fsanitize=address -DWASM_RT_MEMCHECK_SIGNAL_HANDLER=0"
     steps:
     - uses: actions/setup-python@v1
       with:
@@ -94,28 +117,7 @@ jobs:
         submodules: true
     - run: sudo apt-get install ninja-build
     - run: make clang-debug-asan
-    - run: make clang-release-asan
     - run: make test-clang-debug-asan
-    - run: make test-clang-release-asan
-
-  build-ubsan:
-    name: ubsan
-    runs-on: ubuntu-latest
-    env:
-      USE_NINJA: "1"
-      WASM2C_CFLAGS: "-fsanitize=undefined"
-    steps:
-    - uses: actions/setup-python@v1
-      with:
-        python-version: '3.x'
-    - uses: actions/checkout@v1
-      with:
-        submodules: true
-    - run: sudo apt-get install ninja-build
-    - run: make clang-debug-ubsan
-    - run: make clang-release-ubsan
-    - run: make test-clang-debug-ubsan
-    - run: make test-clang-release-ubsan
 
   build-min-cmake:
     name: min-cmake
@@ -132,7 +134,7 @@ jobs:
     - name: Detect minimum CMake version
       run: >
         awk 'match($0, /cmake_minimum_required\(VERSION *([0-9]+\.[0-9]+)\)/, a)
-        { print "WABT_CMAKE_VER=" a[1] }' CMakeLists.txt | tee $GITHUB_ENV
+        { print "WABT_CMAKE_VER=" a[1]; exit; }' CMakeLists.txt | tee $GITHUB_ENV
     - name: Install minimum CMake
       run: |
         python -m pip install -U setuptools wheel pip

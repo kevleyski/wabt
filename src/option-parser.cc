@@ -14,17 +14,13 @@
  * limitations under the License.
  */
 
-#include "src/option-parser.h"
+#include "wabt/option-parser.h"
 
 #include <cstdarg>
 #include <cstdio>
 #include <cstring>
 
-#include "config.h"
-
-#if HAVE_ALLOCA
-#include <alloca.h>
-#endif
+#include "wabt/config.h"
 
 namespace wabt {
 

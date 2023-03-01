@@ -14,21 +14,21 @@
  * limitations under the License.
  */
 
-#include "src/binary-writer-spec.h"
+#include "wabt/binary-writer-spec.h"
 
 #include <cassert>
 #include <cinttypes>
 #include <string_view>
 
-#include "config.h"
+#include "wabt/config.h"
 
-#include "src/binary-writer.h"
-#include "src/binary.h"
-#include "src/cast.h"
-#include "src/filenames.h"
-#include "src/ir.h"
-#include "src/literal.h"
-#include "src/stream.h"
+#include "wabt/binary-writer.h"
+#include "wabt/binary.h"
+#include "wabt/cast.h"
+#include "wabt/filenames.h"
+#include "wabt/ir.h"
+#include "wabt/literal.h"
+#include "wabt/stream.h"
 
 namespace wabt {
 
@@ -568,8 +568,17 @@ void BinaryWriterSpec::WriteCommands() {
         WriteSeparator();
         WriteAction(*assert_return_command->action);
         WriteSeparator();
-        WriteKey("expected");
-        WriteConstVector(assert_return_command->expected);
+        const Expectation* expectation = assert_return_command->expected.get();
+        switch (expectation->type()) {
+          case ExpectationType::Values:
+            WriteKey("expected");
+            break;
+
+          case ExpectationType::Either:
+            WriteKey("either");
+            break;
+        }
+        WriteConstVector(expectation->expected);
         break;
       }
 
@@ -649,8 +658,8 @@ Result WriteBinarySpecScript(
     Stream* log_stream) {
   WriteBinarySpecStreamFactory module_stream_factory =
       [&](std::string_view filename) {
-        out_module_streams->emplace_back(filename,
-                                         MakeUnique<MemoryStream>(log_stream));
+        out_module_streams->emplace_back(
+            filename, std::make_unique<MemoryStream>(log_stream));
         return out_module_streams->back().stream.get();
       };
 

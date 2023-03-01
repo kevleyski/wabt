@@ -24,10 +24,10 @@
 #include <map>
 #include <vector>
 
-#include "src/binary-reader-opcnt.h"
-#include "src/binary-reader.h"
-#include "src/option-parser.h"
-#include "src/stream.h"
+#include "wabt/binary-reader-opcnt.h"
+#include "wabt/binary-reader.h"
+#include "wabt/option-parser.h"
+#include "wabt/stream.h"
 
 #define ERROR(fmt, ...) \
   fprintf(stderr, "%s:%d: " fmt, __FILE__, __LINE__, __VA_ARGS__)
@@ -98,7 +98,7 @@ static size_t SumCounts(const OpcodeInfoCounts& info_counts) {
 }
 
 void WriteCounts(Stream& stream, const OpcodeInfoCounts& info_counts) {
-  typedef std::pair<Opcode, size_t> OpcodeCountPair;
+  using OpcodeCountPair = std::pair<Opcode, size_t>;
 
   std::map<Opcode, size_t> counts;
   for (auto& [info, count] : info_counts) {
@@ -122,9 +122,9 @@ void WriteCounts(Stream& stream, const OpcodeInfoCounts& info_counts) {
 
 void WriteCountsWithImmediates(Stream& stream, const OpcodeInfoCounts& counts) {
   // Remove const from the key type so we can sort below.
-  typedef std::pair<std::remove_const<OpcodeInfoCounts::key_type>::type,
-                    OpcodeInfoCounts::mapped_type>
-      OpcodeInfoCountPair;
+  using OpcodeInfoCountPair =
+      std::pair<std::remove_const<OpcodeInfoCounts::key_type>::type,
+                OpcodeInfoCounts::mapped_type>;
 
   std::vector<OpcodeInfoCountPair> sorted;
   std::copy_if(counts.begin(), counts.end(), std::back_inserter(sorted),

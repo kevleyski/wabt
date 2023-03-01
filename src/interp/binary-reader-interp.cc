@@ -14,16 +14,16 @@
  * limitations under the License.
  */
 
-#include "src/interp/binary-reader-interp.h"
+#include "wabt/interp/binary-reader-interp.h"
 
 #include <map>
 #include <set>
 
-#include "src/binary-reader-nop.h"
-#include "src/feature.h"
-#include "src/interp/interp.h"
-#include "src/shared-validator.h"
-#include "src/stream.h"
+#include "wabt/binary-reader-nop.h"
+#include "wabt/feature.h"
+#include "wabt/interp/interp.h"
+#include "wabt/shared-validator.h"
+#include "wabt/stream.h"
 
 namespace wabt {
 namespace interp {
@@ -727,10 +727,9 @@ Result BinaryReaderInterp::EndElemSegmentInitExpr(Index index) {
 }
 
 Result BinaryReaderInterp::OnElemSegmentElemType(Index index, Type elem_type) {
-  validator_.OnElemSegmentElemType(elem_type);
   ElemDesc& elem = module_.elems.back();
   elem.type = elem_type;
-  return Result::Ok;
+  return validator_.OnElemSegmentElemType(GetLocation(), elem_type);
 }
 
 Result BinaryReaderInterp::OnElemSegmentElemExprCount(Index index,
@@ -1139,6 +1138,9 @@ Result BinaryReaderInterp::OnCallIndirectExpr(Index sig_index,
 }
 
 Result BinaryReaderInterp::OnReturnCallExpr(Index func_index) {
+  CHECK_RESULT(
+      validator_.OnReturnCall(GetLocation(), Var(func_index, GetLocation())));
+
   FuncType& func_type = func_types_[func_index];
 
   Index drop_count, keep_count, catch_drop_count;
@@ -1169,6 +1171,10 @@ Result BinaryReaderInterp::OnReturnCallExpr(Index func_index) {
 
 Result BinaryReaderInterp::OnReturnCallIndirectExpr(Index sig_index,
                                                     Index table_index) {
+  CHECK_RESULT(validator_.OnReturnCallIndirect(
+      GetLocation(), Var(sig_index, GetLocation()),
+      Var(table_index, GetLocation())));
+
   FuncType& func_type = module_.func_types[sig_index];
 
   Index drop_count, keep_count, catch_drop_count;
