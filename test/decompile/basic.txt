@@ -105,6 +105,10 @@
     i32.const 0  ;; fi
     call_indirect
     i32.const 0
+    if
+    else
+    end
+    i32.const 0
   )
   (func $g (param) (result) (local i32)
     ;; This is rare, but requires special handling: uses of local outside scope
@@ -145,9 +149,9 @@ data d_abcdefghijklmnoqrstuvwxyzabc(offset: 100) =
 data d_c(offset: 200) = "hi";
 data d_d(offset: 300) = "Hello, World!\0a\00";
 
-import function ns_fi();
+import function ns_fi(); // func0
 
-export function f(a:int, b:int):int {
+export function f(a:int, b:int):int { // func1
   var c:long = 8L;
   var d:float = 6.0f;
   var e:double = 7.0;
@@ -183,10 +187,11 @@ export function f(a:int, b:int):int {
   nop;
   is_null(null);
   call_indirect(0);
+  if (0) {}
   return 0;
 }
 
-function f_c() {
+function f_c() { // func2
   var a:int;
   loop L_a {
     a = 1;
@@ -195,13 +200,13 @@ function f_c() {
   a;
 }
 
-function signature() {
+function signature() { // func3
 }
 
-function signature_1() {
+function signature_1() { // func4
 }
 
-function f_f() {
+function f_f() { // func5
 }
 
 ;;; STDOUT ;;)

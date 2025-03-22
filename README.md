@@ -14,7 +14,7 @@ WABT (we pronounce it "wabbit") is a suite of tools for WebAssembly, including:
  - [**wasm-strip**](https://webassembly.github.io/wabt/doc/wasm-strip.1.html): remove sections of a WebAssembly binary file
  - [**wasm-validate**](https://webassembly.github.io/wabt/doc/wasm-validate.1.html): validate a file in the WebAssembly binary format
  - [**wast2json**](https://webassembly.github.io/wabt/doc/wast2json.1.html): convert a file in the wasm spec test format to a JSON file and associated wasm binary files
- - [**wasm-opcodecnt**](https://webassembly.github.io/wabt/doc/wasm-opcodecnt.1.html): count opcode usage for instructions
+ - [**wasm-stats**](https://webassembly.github.io/wabt/doc/wasm-stats.1.html): output stats for a module
  - [**spectest-interp**](https://webassembly.github.io/wabt/doc/spectest-interp.1.html): read a Spectest JSON file, and run its tests in the interpreter
 
 These tools are intended for use in (or for development of) toolchains or other
@@ -51,17 +51,18 @@ Wabt has been compiled to JavaScript via emscripten. Some of the functionality i
 | [mutable globals][]   | `--disable-mutable-globals` | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
 | [nontrapping float-to-int conversions][] | `--disable-saturating-float-to-int` | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
 | [sign extension][]    | `--disable-sign-extension`  | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
-| [simd][]              | `--disable-simd`            | ✓ | ✓ | ✓ | ✓ | ✓ | 🚧 |
+| [simd][]              | `--disable-simd`            | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
 | [threads][]           | `--enable-threads`          |   | ✓ | ✓ | ✓ | ✓ |   |
 | [multi-value][]       | `--disable-multi-value`     | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
-| [tail-call][]         | `--enable-tail-call`        |   | ✓ | ✓ | ✓ | ✓ |   |
+| [tail-call][]         | `--enable-tail-call`        |   | ✓ | ✓ | ✓ | ✓ | ✓ |
 | [bulk memory][]       | `--disable-bulk-memory`     | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
 | [reference types][]   | `--disable-reference-types` | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
 | [annotations][]       | `--enable-annotations`      |   |   | ✓ |   |   |   |
 | [memory64][]          | `--enable-memory64`         |   | ✓ | ✓ | ✓ | ✓ | ✓ |
 | [multi-memory][]      | `--enable-multi-memory`     |   | ✓ | ✓ | ✓ | ✓ | ✓ |
-| [extended-const][]    | `--enable-extended-const`   |   | ✓ | ✓ | ✓ | ✓ |   |
-| [relaxed-simd*][]     | `--enable-relaxed-simd`     |   | ✓ | ✓ | ✓ | ✓ |   |
+| [extended-const][]    | `--enable-extended-const`   |   | ✓ | ✓ | ✓ | ✓ | ✓ |
+| [relaxed-simd][]      | `--enable-relaxed-simd`     |   | ✓ | ✓ | ✓ | ✓ |   |
+| [custom-page-sizes][] | `--enable-custom-page-sizes`|   | ✓ | ✓ | ✓ | ✓ | ✓ |
 
 [exception handling]: https://github.com/WebAssembly/exception-handling
 [mutable globals]: https://github.com/WebAssembly/mutable-global
@@ -78,6 +79,7 @@ Wabt has been compiled to JavaScript via emscripten. Some of the functionality i
 [multi-memory]: https://github.com/WebAssembly/multi-memory
 [extended-const]: https://github.com/WebAssembly/extended-const
 [relaxed-simd]: https://github.com/WebAssembly/relaxed-simd
+[custom-page-sizes]: https://github.com/WebAssembly/custom-page-sizes
 
 ## Cloning
 
@@ -358,3 +360,19 @@ $ out/clang/Debug/fuzz/wasm2wat_fuzz ...
 
 See the [libFuzzer documentation](https://llvm.org/docs/LibFuzzer.html) for
 more information about how to use this tool.
+
+## Installing prebuilt binaries
+
+Wabt is available on many platforms as prepackaged binaries. For example, if
+you use Homebrew you can use:
+```sh
+brew install wabt
+```
+
+And you use an apt-based linux distribution you can use:
+```sh
+sudo apt install wabt
+```
+
+You can also download prebuilt binaries for many platforms directly from the
+github releases page.

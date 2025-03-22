@@ -124,6 +124,7 @@ Instr Istream::Read(Offset* offset) const {
     case Opcode::Nop:
     case Opcode::Return:
     case Opcode::Unreachable:
+    case Opcode::ThrowRef:
     case Opcode::RefNull:
       // 0 immediates, 0 operands.
       instr.kind = InstrKind::Imm_0_Op_0;
@@ -514,6 +515,9 @@ Instr Istream::Read(Offset* offset) const {
 
     case Opcode::GlobalGet:
     case Opcode::LocalGet:
+    case Opcode::InterpLocalGetRef:
+    case Opcode::InterpGlobalGetRef:
+    case Opcode::InterpMarkRef:
     case Opcode::MemorySize:
     case Opcode::TableSize:
     case Opcode::DataDrop:
@@ -793,6 +797,7 @@ Instr Istream::Read(Offset* offset) const {
     case Opcode::Invalid:
     case Opcode::Loop:
     case Opcode::Try:
+    case Opcode::TryTable:
     case Opcode::ReturnCall:
       // Not used.
       break;

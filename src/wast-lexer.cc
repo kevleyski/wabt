@@ -29,7 +29,14 @@ namespace wabt {
 
 namespace {
 
+#if __clang__
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wimplicit-fallthrough"
+#endif
 #include "prebuilt/lexer-keywords.cc"
+#if __clang__
+#pragma clang diagnostic pop
+#endif
 
 }  // namespace
 
@@ -70,7 +77,7 @@ Token WastLexer::GetToken() {
           }
           return BareToken(TokenType::Eof);
         } else if (MatchString("(@")) {
-          GetIdToken();
+          GetIdChars();
           // offset=2 to skip the "(@" prefix
           return TextToken(TokenType::LparAnn, 2);
         } else {
@@ -151,7 +158,7 @@ Token WastLexer::GetToken() {
         return GetNumberToken(TokenType::Nat);
 
       case '$':
-        return GetIdToken();
+        return GetIdChars();  // Initial $ is idchar, so this produces id token
 
       case 'a':
         return GetNameEqNumToken("align=", TokenType::AlignEqNat);
@@ -180,13 +187,23 @@ Token WastLexer::GetToken() {
 }
 
 Location WastLexer::GetLocation() {
-  auto column = [=](const char* p) {
+  auto column = [this](const char* p) {
     return std::max(1, static_cast<int>(p - line_start_ + 1));
   };
   return Location(filename_, line_, column(token_start_), column(cursor_));
 }
 
 std::string_view WastLexer::GetText(size_t offset) {
+  // Bounds checks are necessary because token_start may have been moved
+  // (e.g. if GetStringToken found a newline and reset token_start to
+  // point at it).
+
+  if (token_start_ + offset >= buffer_end_)
+    return {};
+
+  if (cursor_ <= token_start_ + offset)
+    return {};
+
   return std::string_view(token_start_ + offset,
                           (cursor_ - token_start_) - offset);
 }
@@ -267,6 +284,13 @@ bool WastLexer::ReadLineComment() {
     switch (ReadChar()) {
       case kEof:
         return false;
+
+      case '\r':
+        if (PeekChar() == '\n') {
+          ReadChar();
+        }
+        Newline();
+        return true;
 
       case '\n':
         Newline();
@@ -577,8 +601,7 @@ Token WastLexer::GetNameEqNumToken(std::string_view name,
   return GetKeywordToken();
 }
 
-Token WastLexer::GetIdToken() {
-  ReadChar();
+Token WastLexer::GetIdChars() {
   if (ReadReservedChars() == ReservedChars::Id) {
     return TextToken(TokenType::Var);
   }

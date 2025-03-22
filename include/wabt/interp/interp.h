@@ -77,7 +77,6 @@ using ExternKind = ExternalKind;
 enum class Mutability { Const, Var };
 enum class TagAttr { Exception };
 using SegmentMode = SegmentKind;
-enum class ElemKind { RefNull, RefFunc };
 
 enum class ObjectKind {
   Null,
@@ -207,7 +206,7 @@ struct MemoryType : ExternType {
   static const ExternKind skind = ExternKind::Memory;
   static bool classof(const ExternType* type);
 
-  explicit MemoryType(Limits);
+  explicit MemoryType(Limits, uint32_t);
 
   std::unique_ptr<ExternType> Clone() const override;
 
@@ -216,6 +215,7 @@ struct MemoryType : ExternType {
                       std::string* out_msg);
 
   Limits limits;
+  uint32_t page_size;
 };
 
 struct GlobalType : ExternType {
@@ -296,6 +296,7 @@ struct LocalDesc {
 struct CatchDesc {
   Index tag_index;
   u32 offset;
+  bool ref = false;
 };
 
 // Handlers for a catch-less `try` or `try-catch` block are included in the
@@ -314,6 +315,7 @@ struct HandlerDesc {
   // Local stack heights at the handler site that need to be restored.
   u32 values;
   u32 exceptions;
+  bool catch_all_ref = false;
 };
 
 struct FuncDesc {
@@ -359,13 +361,8 @@ struct DataDesc {
   FuncDesc init_func;
 };
 
-struct ElemExpr {
-  ElemKind kind;
-  Index index;
-};
-
 struct ElemDesc {
-  std::vector<ElemExpr> elements;
+  std::vector<FuncDesc> elements;
   ValueType type;
   SegmentMode mode;
   Index table_index;
@@ -972,7 +969,7 @@ class Tag : public Extern {
 
 class ElemSegment {
  public:
-  explicit ElemSegment(const ElemDesc*, RefPtr<Instance>&);
+  explicit ElemSegment(Store& store, const ElemDesc*, RefPtr<Instance>&);
 
   bool IsValidRange(u32 offset, u32 size) const;
   void Drop();
@@ -1129,6 +1126,9 @@ class Thread {
   T WABT_VECTORCALL Pop();
   Value Pop();
   u64 PopPtr(const Memory::Ptr& memory);
+  u64 PopPtr(const Table::Ptr& table);
+  void PushPtr(const Memory::Ptr& memory, u64 value);
+  void PushPtr(const Table::Ptr& table, u64 value);
 
   template <typename T>
   void WABT_VECTORCALL Push(T);

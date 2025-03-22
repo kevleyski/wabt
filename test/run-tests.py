@@ -20,6 +20,7 @@ import difflib
 import fnmatch
 import multiprocessing
 import os
+import platform
 import re
 import shlex
 import shutil
@@ -37,11 +38,6 @@ REPO_ROOT_DIR = os.path.dirname(TEST_DIR)
 OUT_DIR = os.path.join(REPO_ROOT_DIR, 'out')
 DEFAULT_TIMEOUT = 120    # seconds
 SLOW_TIMEOUT_MULTIPLIER = 3
-
-if sys.byteorder == 'big':
-    wasm2c_args = ['--cflags=-DWABT_BIG_ENDIAN=1']
-else:
-    wasm2c_args = []
 
 # default configurations for tests
 TOOLS = {
@@ -133,9 +129,9 @@ TOOLS = {
         ('RUN', '%(wasm-decompile)s %(temp_file)s.wasm'),
         ('VERBOSE-ARGS', ['--print-cmd', '-v']),
     ],
-    'run-opcodecnt': [
+    'run-stats': [
         ('RUN', '%(wat2wasm)s %(in_file)s -o %(temp_file)s.wasm'),
-        ('RUN', '%(wasm-opcodecnt)s %(temp_file)s.wasm'),
+        ('RUN', '%(wasm-stats)s %(temp_file)s.wasm'),
         ('VERBOSE-ARGS', ['--print-cmd', '-v']),
     ],
     'run-gen-spec-js': [
@@ -151,7 +147,7 @@ TOOLS = {
             '--no-error-cmdline',
             '-o',
             '%(out_dir)s',
-        ] + wasm2c_args),
+        ]),
         ('VERBOSE-ARGS', ['--print-cmd', '-v']),
     ],
     'run-wasm2c': [
@@ -505,6 +501,10 @@ class TestInfo(object):
         elif key == 'ENV':
             # Pattern: FOO=1 BAR=stuff
             self.env = dict(x.split('=') for x in value.split())
+        elif key == 'PLATFORMS':
+            self.skip = platform.system() not in value.split()
+        elif key == 'NOT-PLATFORMS':
+            self.skip = platform.system() in value.split()
         else:
             raise Error('Unknown directive: %s' % key)
 
@@ -928,7 +928,10 @@ def main(args):
                         action='store_true')
     parser.add_argument('patterns', metavar='pattern', nargs='*',
                         help='test patterns.')
+    parser.add_argument('--exclude-dir', action='append', default=[],
+                        help='directory to exclude.')
     options = parser.parse_args(args)
+    exclude_dirs = options.exclude_dir
 
     if options.jobs != 1:
         if options.fail_fast:
@@ -937,7 +940,6 @@ def main(args):
             parser.error('--stop-interactive only works with -j1')
 
     if options.patterns:
-        exclude_dirs = []
         pattern_re = '|'.join(
             fnmatch.translate('*%s*' % p) for p in options.patterns)
     else:
@@ -945,7 +947,7 @@ def main(args):
         # By default, exclude wasi tests because WASI support is not include
         # by int the build by default.
         # TODO(sbc): Find some way to detect the WASI support.
-        exclude_dirs = ['wasi']
+        exclude_dirs += ['wasi']
 
     test_names = FindTestFiles('.txt', pattern_re, exclude_dirs)
 

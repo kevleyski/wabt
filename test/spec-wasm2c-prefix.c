@@ -11,6 +11,56 @@
 
 #include "wasm-rt.h"
 #include "wasm-rt-impl.h"
+#include "wasm-rt-exceptions.h"
+
+/* NOTE: function argument evaluation order is implementation-defined in C,
+   so it SHOULD NOT be relied on by tests. */
+#if WABT_BIG_ENDIAN
+#define v128_i8x16_make(a,b,c,d,e,f,g,h,i,j,k,l,m,n,o,p) \
+	simde_wasm_i8x16_make(p,o,n,m,l,k,j,i,h,g,f,e,d,c,b,a)
+#define v128_u8x16_make(a,b,c,d,e,f,g,h,i,j,k,l,m,n,o,p) \
+	simde_wasm_u8x16_make(p,o,n,m,l,k,j,i,h,g,f,e,d,c,b,a)
+#define v128_i16x8_make(a,b,c,d,e,f,g,h) simde_wasm_i16x8_make(h,g,f,e,d,c,b,a)
+#define v128_u16x8_make(a,b,c,d,e,f,g,h) simde_wasm_u16x8_make(h,g,f,e,d,c,b,a)
+#define v128_i32x4_make(a,b,c,d) simde_wasm_i32x4_make(d,c,b,a)
+#define v128_u32x4_make(a,b,c,d) simde_wasm_u32x4_make(d,c,b,a)
+#define v128_i64x2_make(a,b) simde_wasm_i64x2_make(b,a)
+#define v128_u64x2_make(a,b) simde_wasm_u64x2_make(b,a)
+#define v128_f32x4_make(a,b,c,d) simde_wasm_f32x4_make(d,c,b,a)
+#define v128_f64x2_make(a,b) simde_wasm_f64x2_make(b,a)
+#define v128_i8x16_extract_lane(a,n) simde_wasm_u8x16_extract_lane(a,15-(n))
+#define v128_u8x16_extract_lane(a,n) simde_wasm_u8x16_extract_lane(a,15-(n))
+#define v128_i16x8_extract_lane(a,n) simde_wasm_u16x8_extract_lane(a,7-(n))
+#define v128_u16x8_extract_lane(a,n) simde_wasm_u16x8_extract_lane(a,7-(n))
+#define v128_i32x4_extract_lane(a,n) simde_wasm_u32x4_extract_lane(a,3-(n))
+#define v128_u32x4_extract_lane(a,n) simde_wasm_u32x4_extract_lane(a,3-(n))
+#define v128_i64x2_extract_lane(a,n) simde_wasm_u64x2_extract_lane(a,1-(n))
+#define v128_u64x2_extract_lane(a,n) simde_wasm_u64x2_extract_lane(a,1-(n))
+#define v128_f32x4_extract_lane(a,n) simde_wasm_f32x4_extract_lane(a,3-(n))
+#define v128_f64x2_extract_lane(a,n) simde_wasm_f64x2_extract_lane(a,1-(n))
+#else
+#define v128_i8x16_make simde_wasm_i8x16_make
+#define v128_u8x16_make simde_wasm_u8x16_make
+#define v128_i16x8_make simde_wasm_i16x8_make
+#define v128_u16x8_make simde_wasm_u16x8_make
+#define v128_i32x4_make simde_wasm_i32x4_make
+#define v128_u32x4_make simde_wasm_u32x4_make
+#define v128_i64x2_make simde_wasm_i64x2_make
+#define v128_u64x2_make simde_wasm_u64x2_make
+#define v128_f32x4_make simde_wasm_f32x4_make
+#define v128_f64x2_make simde_wasm_f64x2_make
+// like is_equal_TYPE below, always use unsigned for these
+#define v128_i8x16_extract_lane simde_wasm_u8x16_extract_lane
+#define v128_u8x16_extract_lane simde_wasm_u8x16_extract_lane
+#define v128_i16x8_extract_lane simde_wasm_u16x8_extract_lane
+#define v128_u16x8_extract_lane simde_wasm_u16x8_extract_lane
+#define v128_i32x4_extract_lane simde_wasm_u32x4_extract_lane
+#define v128_u32x4_extract_lane simde_wasm_u32x4_extract_lane
+#define v128_i64x2_extract_lane simde_wasm_u64x2_extract_lane
+#define v128_u64x2_extract_lane simde_wasm_u64x2_extract_lane
+#define v128_f32x4_extract_lane simde_wasm_f32x4_extract_lane
+#define v128_f64x2_extract_lane simde_wasm_f64x2_extract_lane
+#endif
 
 static int g_tests_run;
 static int g_tests_passed;
@@ -118,6 +168,24 @@ static void error(const char* file, int line, const char* format, ...) {
     }                                                                     \
   } while (0)
 
+#define ASSERT_RETURN_EXNREF(f, expected)                                \
+  do {                                                                   \
+    g_tests_run++;                                                       \
+    int trap_code = wasm_rt_impl_try();                                  \
+    if (trap_code) {                                                     \
+      error(__FILE__, __LINE__, #f " trapped (%s).\n",                   \
+            wasm_rt_strerror(trap_code));                                \
+    } else {                                                             \
+      wasm_rt_exnref_t actual = f;                                       \
+      if (is_equal_wasm_rt_exnref_t(actual, expected)) {                 \
+        g_tests_passed++;                                                \
+      } else {                                                           \
+        error(__FILE__, __LINE__,                                        \
+              "in " #f ": mismatch between expected and actual exnref"); \
+      }                                                                  \
+    }                                                                    \
+  } while (0)
+
 #define ASSERT_RETURN_NAN_T(type, itype, fmt, f, kind)                        \
   do {                                                                        \
     g_tests_run++;                                                            \
@@ -142,8 +210,8 @@ static void error(const char* file, int line, const char* format, ...) {
 
 #define MULTI_T_UNPACK_(...) __VA_ARGS__
 #define MULTI_T_UNPACK(arg) MULTI_T_UNPACK_ arg
-#define MULTI_i8 "%su "
-#define MULTI_i16 "%su "
+#define MULTI_i8 "%" PRIu8 " "
+#define MULTI_i16 "%" PRIu16 " "
 #define MULTI_i32 "%u "
 #define MULTI_i64 "%" PRIu64 " "
 #define MULTI_f32 "%.9g "
@@ -223,6 +291,12 @@ static bool is_equal_wasm_rt_funcref_t(wasm_rt_funcref_t x,
          (x.func == y.func) && (x.module_instance == y.module_instance);
 }
 
+#ifdef WASM_EXN_MAX_SIZE
+static bool is_equal_wasm_rt_exnref_t(wasm_rt_exnref_t x, wasm_rt_exnref_t y) {
+  return x.tag == y.tag && x.size == y.size && !memcmp(x.data, y.data, x.size);
+}
+#endif
+
 wasm_rt_externref_t spectest_make_externref(uintptr_t x) {
   return (wasm_rt_externref_t)(x + 1);  // externref(0) is not null
 }
@@ -279,6 +353,7 @@ static bool is_arithmetic_nan_f64(u64 x) {
 
 typedef struct w2c_spectest {
   wasm_rt_funcref_table_t spectest_table;
+  wasm_rt_funcref_table_t spectest_table64;
   wasm_rt_memory_t spectest_memory;
   uint32_t spectest_global_i32;
   uint64_t spectest_global_i64;
@@ -323,6 +398,10 @@ wasm_rt_funcref_table_t* w2c_spectest_table(w2c_spectest* instance) {
   return &instance->spectest_table;
 }
 
+wasm_rt_funcref_table_t* w2c_spectest_table64(w2c_spectest* instance) {
+  return &instance->spectest_table64;
+}
+
 wasm_rt_memory_t* w2c_spectest_memory(w2c_spectest* instance) {
   return &instance->spectest_memory;
 }
@@ -346,15 +425,78 @@ double* w2c_spectest_global_f64(w2c_spectest* instance) {
 static void init_spectest_module(w2c_spectest* instance) {
   instance->spectest_global_i32 = 666;
   instance->spectest_global_i64 = 666l;
-  wasm_rt_allocate_memory(&instance->spectest_memory, 1, 2, false);
+  instance->spectest_global_f32 = 666.6;
+  instance->spectest_global_f64 = 666.6;
+  wasm_rt_allocate_memory(&instance->spectest_memory, 1, 2, false,
+                          WASM_DEFAULT_PAGE_SIZE);
   wasm_rt_allocate_funcref_table(&instance->spectest_table, 10, 20);
+  wasm_rt_allocate_funcref_table(&instance->spectest_table64, 10, 20);
 }
 
+// POSIX-only test config where embedder handles signals instead of w2c runtime
+#ifdef WASM2C_TEST_EMBEDDER_SIGNAL_HANDLING
+#include <signal.h>
+
+static void posix_signal_handler(int sig, siginfo_t* si, void* unused) {
+  wasm_rt_trap((si->si_code == SEGV_ACCERR) ? WASM_RT_TRAP_OOB
+                                            : WASM_RT_TRAP_EXHAUSTION);
+}
+
+static void posix_install_signal_handler(void) {
+  /* install altstack */
+  stack_t ss;
+  ss.ss_sp = malloc(SIGSTKSZ);
+  ss.ss_flags = 0;
+  ss.ss_size = SIGSTKSZ;
+  if (sigaltstack(&ss, NULL) != 0) {
+    perror("sigaltstack failed");
+    abort();
+  }
+
+  /* install signal handler */
+  struct sigaction sa;
+  memset(&sa, '\0', sizeof(sa));
+  sa.sa_flags = SA_SIGINFO | SA_ONSTACK;
+  sigemptyset(&sa.sa_mask);
+  sa.sa_sigaction = posix_signal_handler;
+  if (sigaction(SIGSEGV, &sa, NULL) != 0 || sigaction(SIGBUS, &sa, NULL) != 0) {
+    perror("sigaction failed");
+    abort();
+  }
+}
+
+static void posix_cleanup_signal_handler(void) {
+  /* remove signal handler */
+  struct sigaction sa;
+  memset(&sa, '\0', sizeof(sa));
+  sa.sa_handler = SIG_DFL;
+  if (sigaction(SIGSEGV, &sa, NULL) != 0 || sigaction(SIGBUS, &sa, NULL)) {
+    perror("sigaction failed");
+    abort();
+  }
+
+  /* disable and free altstack */
+  stack_t ss;
+  ss.ss_flags = SS_DISABLE;
+  if (sigaltstack(&ss, NULL) != 0) {
+    perror("sigaltstack failed");
+    abort();
+  }
+  free(ss.ss_sp);
+}
+#endif
+
 int main(int argc, char** argv) {
+#ifdef WASM2C_TEST_EMBEDDER_SIGNAL_HANDLING
+  posix_install_signal_handler();
+#endif
   wasm_rt_init();
   init_spectest_module(&spectest_instance);
   run_spec_tests();
   printf("%u/%u tests passed.\n", g_tests_passed, g_tests_run);
   wasm_rt_free();
+#ifdef WASM2C_TEST_EMBEDDER_SIGNAL_HANDLING
+  posix_cleanup_signal_handler();
+#endif
   return g_tests_passed != g_tests_run;
 }

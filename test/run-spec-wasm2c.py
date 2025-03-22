@@ -24,6 +24,7 @@ import re
 import struct
 import sys
 import shlex
+import subprocess
 
 import find_exe
 import utils
@@ -84,12 +85,12 @@ def F64ToC(f64_bits):
     elif f64_bits == F64_SIGN_BIT:
         return '-0.0'
     else:
-        return '%#.17gL' % ReinterpretF64(f64_bits)
+        return '%#.17g' % ReinterpretF64(f64_bits)
 
 
 def MangleType(t):
     return {'i32': 'i', 'i64': 'j', 'f32': 'f', 'f64': 'd', 'v128': 'o',
-            'externref': 'e', 'funcref': 'r'}[t]
+            'externref': 'e', 'funcref': 'r', 'exnref': 'x'}[t]
 
 
 def MangleTypes(types):
@@ -234,7 +235,7 @@ class CWriter(object):
             self.commands.insert(0, dummy_command)
 
     def _WriteFileAndLine(self, command):
-        self.out_file.write('// %s:%d\n' % (self.source_filename, command['line']))
+        self.out_file.write('#line {line:d} "{name:s}"\n'.format(name=self.source_filename, line=command['line']))
 
     def _WriteIncludes(self):
         idx = 0
@@ -320,6 +321,7 @@ class CWriter(object):
                     'i64': 'ASSERT_RETURN_I64',
                     'f64': 'ASSERT_RETURN_F64',
                     'externref': 'ASSERT_RETURN_EXTERNREF',
+                    'exnref': 'ASSERT_RETURN_EXNREF',
                     'funcref': 'ASSERT_RETURN_FUNCREF',
                 }
 
@@ -373,7 +375,7 @@ class CWriter(object):
                 return '"(f64 %s)"' % value
             return F64ToC(int(value))
         elif type_ == 'v128':
-            return 'simde_wasm_' + const['lane_type'] + 'x' + str(len(const['value'])) + '_make(' + ','.join([self._Constant({'type': const['lane_type'], 'value': x}) for x in value]) + ')'
+            return 'v128_' + const['lane_type'] + 'x' + str(len(const['value'])) + '_make(' + ','.join([self._Constant({'type': const['lane_type'], 'value': x}) for x in value]) + ')'
         elif type_ == 'externref':
             if value == 'null':
                 return 'wasm_rt_externref_null_value'
@@ -384,6 +386,11 @@ class CWriter(object):
                 return 'wasm_rt_funcref_null_value'
             else:
                 assert False  # can't make an arbitrary funcref from an integer value
+        elif type_ == 'exnref':
+            if value == 'null':
+                return 'wasm_rt_exnref_null_value'
+            else:
+                assert False  # can't make an arbitrary exnref from an integer value
         else:
             assert False
 
@@ -408,7 +415,7 @@ class CWriter(object):
         return ', '.join(self._Constant({'type': const['lane_type'], 'value': val}) for val in const['value'])
 
     def _SIMDFound(self, num, lane_type, lane_count):
-        return 'simde_wasm_%sx%d_extract_lane(actual, %d)' % (lane_type, lane_count, num)
+        return 'v128_%sx%d_extract_lane(actual, %d)' % (lane_type, lane_count, num)
 
     def _SIMDFoundList(self, lane_type, lane_count):
         return ', '.join(self._SIMDFound(num, lane_type, lane_count) for num in range(lane_count))
@@ -444,30 +451,38 @@ class CWriter(object):
             raise Error('Unexpected action type: %s' % type_)
 
 
-def Compile(cc, c_filename, out_dir, *cflags):
+def Compile(cc, c_filename, out_dir, use_c11, *cflags):
     if IS_WINDOWS:
         ext = '.obj'
     else:
         ext = '.o'
     o_filename = utils.ChangeDir(utils.ChangeExt(c_filename, ext), out_dir)
     args = list(cflags)
+
     if IS_WINDOWS:
-        args += ['/nologo', '/DWASM_RT_ENABLE_SIMD',
-                 '/MDd', '/c', c_filename, '/Fo' + o_filename]
+        cstd_flag = ['/std:c11', '/experimental:c11atomics'] if use_c11 else []
+        args += cstd_flag + ['/nologo', '/MDd', '/c', c_filename, '/Fo' + o_filename]
     else:
         # See "Compiling the wasm2c output" section of wasm2c/README.md
         # When compiling with -O2, GCC and clang require '-fno-optimize-sibling-calls'
         # and '-frounding-math' to maintain conformance with the spec tests
         # (GCC also requires '-fsignaling-nans')
+        if use_c11:
+            args.append('-std=c11')
+        else:
+            args.append('-std=c99')
         args += ['-c', c_filename, '-o', o_filename, '-O2',
-                 '-DWASM_RT_ENABLE_SIMD',
                  '-Wall', '-Werror', '-Wno-unused',
+                 '-Wno-array-bounds',
                  '-Wno-ignored-optimization-argument',
                  '-Wno-tautological-constant-out-of-range-compare',
                  '-Wno-infinite-recursion',
+                 # simde calls for pragma clang loop vectorize(enable),
+                 # which can generate warnings if the optimization pass fails.
+                 '-Wno-pass-failed',
                  '-fno-optimize-sibling-calls',
                  '-frounding-math', '-fsignaling-nans',
-                 '-std=c99', '-D_DEFAULT_SOURCE']
+                 '-D_DEFAULT_SOURCE']
     # Use RunWithArgsForStdout and discard stdout because cl.exe
     # unconditionally prints the name of input files on stdout
     # and we don't want that to be part of our stdout.
@@ -533,9 +548,16 @@ def main(args):
     parser.add_argument('--enable-exceptions', action='store_true')
     parser.add_argument('--enable-multi-memory', action='store_true')
     parser.add_argument('--enable-memory64', action='store_true')
+    parser.add_argument('--enable-extended-const', action='store_true')
+    parser.add_argument('--enable-threads', action='store_true')
+    parser.add_argument('--enable-tail-call', action='store_true')
+    parser.add_argument('--enable-custom-page-sizes', action='store_true')
     parser.add_argument('--disable-bulk-memory', action='store_true')
     parser.add_argument('--disable-reference-types', action='store_true')
     parser.add_argument('--debug-names', action='store_true')
+    parser.add_argument('--num-outputs', metavar='COUNT',
+                        help='number of output c files for wasm2c', dest='num_outputs',
+                        default=1, type=int, action='store')
     options = parser.parse_args(args)
 
     with utils.TempDirectory(options.out_dir, 'run-spec-wasm2c-') as out_dir:
@@ -548,6 +570,10 @@ def main(args):
             '-v': options.verbose,
             '--enable-exceptions': options.enable_exceptions,
             '--enable-memory64': options.enable_memory64,
+            '--enable-extended-const': options.enable_extended_const,
+            '--enable-threads': options.enable_threads,
+            '--enable-tail-call': options.enable_tail_call,
+            '--enable-custom-page-sizes': options.enable_custom_page_sizes,
             '--enable-multi-memory': options.enable_multi_memory,
             '--disable-bulk-memory': options.disable_bulk_memory,
             '--disable-reference-types': options.disable_reference_types,
@@ -564,6 +590,10 @@ def main(args):
         wasm2c.AppendOptionalArgs({
             '--enable-exceptions': options.enable_exceptions,
             '--enable-memory64': options.enable_memory64,
+            '--enable-extended-const': options.enable_extended_const,
+            '--enable-threads': options.enable_threads,
+            '--enable-tail-call': options.enable_tail_call,
+            '--enable-custom-page-sizes': options.enable_custom_page_sizes,
             '--enable-multi-memory': options.enable_multi_memory})
 
         options.cflags += shlex.split(os.environ.get('WASM2C_CFLAGS', ''))
@@ -588,15 +618,24 @@ def main(args):
             if IS_WINDOWS:
                 sys.stderr.write('skipping: wasm2c+memory64 is not yet supported under msvc\n')
                 return SKIPPED
-            cflags.append('-DSUPPORT_MEMORY64=1')
+
+        use_c11 = options.enable_threads
 
         for i, wasm_filename in enumerate(cwriter.GetModuleFilenames()):
             wasm_filename = os.path.join(out_dir, wasm_filename)
-            c_filename = utils.ChangeExt(wasm_filename, '.c')
-            args = ['-n', cwriter.GetModulePrefixUnmangled(i)]
-            wasm2c.RunWithArgs(wasm_filename, '-o', c_filename, *args)
+            c_filename_input = utils.ChangeExt(wasm_filename, '.c')
+            c_filenames = []
+            if options.num_outputs > 1:
+                base = os.path.splitext(c_filename_input)[0]
+                for j in range(options.num_outputs):
+                    c_filenames.append(base + '_' + str(j) + '.c')
+            else:
+                c_filenames.append(utils.ChangeExt(wasm_filename, '.c'))
+            args = ['-n', cwriter.GetModulePrefixUnmangled(i), '--num-outputs', str(options.num_outputs)]
+            wasm2c.RunWithArgs(wasm_filename, '-o', c_filename_input, *args)
             if options.compile:
-                o_filenames.append(Compile(cc, c_filename, out_dir, *cflags))
+                for j, c_filename in enumerate(c_filenames):
+                    o_filenames.append(Compile(cc, c_filename, out_dir, use_c11, *cflags))
 
         cwriter.Write()
         main_filename = utils.ChangeExt(json_file_path, '-main.c')
@@ -604,12 +643,17 @@ def main(args):
             out_main_file.write(output.getvalue())
 
         if options.compile:
-            # Compile wasm-rt-impl.
-            wasm_rt_impl_c = os.path.join(options.wasmrt_dir, 'wasm-rt-impl.c')
-            o_filenames.append(Compile(cc, wasm_rt_impl_c, out_dir, *cflags))
+            # Compile runtime code
+            source_files = [
+                main_filename,
+                os.path.join(options.wasmrt_dir, 'wasm-rt-impl.c'),
+                os.path.join(options.wasmrt_dir, 'wasm-rt-exceptions-impl.c'),
+                os.path.join(options.wasmrt_dir, 'wasm-rt-mem-impl.c'),
+            ]
 
-            # Compile and link -main test run entry point
-            o_filenames.append(Compile(cc, main_filename, out_dir, *cflags))
+            for f in source_files:
+                o_filenames.append(Compile(cc, f, out_dir, use_c11, *cflags))
+
             if IS_WINDOWS:
                 exe_ext = '.exe'
                 libs = []
@@ -621,8 +665,7 @@ def main(args):
 
             # Run the resulting binary
             if options.run:
-                utils.Executable(main_exe, forward_stdout=True).RunWithArgs()
-
+                return subprocess.run([main_exe]).returncode
     return 0
 
 

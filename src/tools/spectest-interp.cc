@@ -24,6 +24,8 @@
 #include <string>
 #include <vector>
 
+#include "wabt/binary-reader-ir.h"
+#include "wabt/binary-reader-nop.h"
 #include "wabt/binary-reader.h"
 #include "wabt/cast.h"
 #include "wabt/common.h"
@@ -189,9 +191,8 @@ int LaneCountFromType(Type type) {
 }
 
 ExpectedValue GetLane(const ExpectedValue& ev, int lane) {
-  int lane_count = LaneCountFromType(ev.lane_type);
   assert(ev.value.type == Type::V128);
-  assert(lane < lane_count);
+  assert(lane < LaneCountFromType(ev.lane_type));
 
   ExpectedValue result;
   result.value.type = ev.lane_type;
@@ -236,9 +237,8 @@ ExpectedValue GetLane(const ExpectedValue& ev, int lane) {
 }
 
 TypedValue GetLane(const TypedValue& tv, Type lane_type, int lane) {
-  int lane_count = LaneCountFromType(lane_type);
   assert(tv.type == Type::V128);
-  assert(lane < lane_count);
+  assert(lane < LaneCountFromType(lane_type));
 
   TypedValue result;
   result.type = lane_type;
@@ -274,6 +274,42 @@ TypedValue GetLane(const TypedValue& tv, Type lane_type, int lane) {
       WABT_UNREACHABLE;
   }
   return result;
+}
+
+bool CheckIR(const std::string& filename, bool validate) {
+  std::vector<uint8_t> file_data;
+
+  if (Failed(ReadFile(filename, &file_data))) {
+    return false;
+  }
+
+  const bool kReadDebugNames = true;
+  const bool kStopOnFirstError = true;
+  const bool kFailOnCustomSectionError = true;
+  ReadBinaryOptions options(s_features, s_log_stream.get(), kReadDebugNames,
+                            kStopOnFirstError, kFailOnCustomSectionError);
+
+  Errors errors;
+  wabt::Module module;
+  if (Failed(ReadBinaryIr(filename.c_str(), file_data.data(), file_data.size(),
+                          options, &errors, &module))) {
+    return false;
+  }
+
+  if (!validate) {
+    return true;
+  }
+
+  return Succeeded(
+      ValidateModule(&module, &errors, ValidateOptions{s_features}));
+}
+
+bool WellformedIR(const std::string& filename) {
+  return CheckIR(filename, false);
+}
+
+bool ValidIR(const std::string& filename) {
+  return CheckIR(filename, true);
 }
 
 class AssertReturnCommand : public CommandMixin<CommandType::AssertReturn> {
@@ -597,6 +633,8 @@ wabt::Result JSONParser::ParseType(Type* out_type) {
     *out_type = Type::FuncRef;
   } else if (type_str == "externref") {
     *out_type = Type::ExternRef;
+  } else if (type_str == "exnref") {
+    *out_type = Type::ExnRef;
   } else {
     PrintError("unknown type: \"%s\"", type_str.c_str());
     return wabt::Result::Error;
@@ -824,6 +862,16 @@ wabt::Result JSONParser::ParseConstValue(Type type,
         // TODO: hack, just whatever ref is at this index; but skip null (which
         // is always 0).
         out_value->Set(Ref{value + 1});
+      }
+      break;
+
+    case Type::ExnRef:
+      if (value_str == "null") {
+        out_value->Set(Ref::Null);
+      } else {
+        // FIXME?
+        PrintError("NYI");
+        return wabt::Result::Error;
       }
       break;
 
@@ -1201,8 +1249,15 @@ class CommandRunner {
 
   void TallyCommand(wabt::Result);
 
-  wabt::Result ReadInvalidTextModule(std::string_view module_filename,
-                                     const std::string& header);
+  wabt::Result ReadTextModule(std::string_view module_filename,
+                              const std::string& header,
+                              bool validate);
+  wabt::Result ReadMalformedBinaryModule(std::string_view module_filename,
+                                         Errors* errors);
+  wabt::Result ReadMalformedModule(int line_number,
+                                   std::string_view module_filename,
+                                   ModuleType module_type,
+                                   const char* desc);
   wabt::Result ReadInvalidModule(int line_number,
                                  std::string_view module_filename,
                                  ModuleType module_type,
@@ -1255,7 +1310,11 @@ CommandRunner::CommandRunner() : store_(s_features) {
   spectest["table"] =
       interp::Table::New(store_, TableType{ValueType::FuncRef, Limits{10, 20}});
 
-  spectest["memory"] = interp::Memory::New(store_, MemoryType{Limits{1, 2}});
+  spectest["table64"] = interp::Table::New(
+      store_, TableType{ValueType::FuncRef, Limits{10, 20, false, true}});
+
+  spectest["memory"] = interp::Memory::New(
+      store_, MemoryType{Limits{1, 2}, WABT_DEFAULT_PAGE_SIZE});
 
   spectest["global_i32"] =
       interp::Global::New(store_, GlobalType{ValueType::I32, Mutability::Const},
@@ -1265,10 +1324,10 @@ CommandRunner::CommandRunner() : store_(s_features) {
                           Value::Make(u64{666}));
   spectest["global_f32"] =
       interp::Global::New(store_, GlobalType{ValueType::F32, Mutability::Const},
-                          Value::Make(f32{666}));
+                          Value::Make(f32{666.6}));
   spectest["global_f64"] =
       interp::Global::New(store_, GlobalType{ValueType::F64, Mutability::Const},
-                          Value::Make(f64{666}));
+                          Value::Make(f64{666.6}));
 }
 
 wabt::Result CommandRunner::Run(const Script& script) {
@@ -1360,8 +1419,9 @@ ActionResult CommandRunner::RunAction(int line_number,
   switch (action->type) {
     case ActionType::Invoke: {
       auto* func = cast<interp::Func>(extern_.get());
-      func->Call(store_, action->args, result.values, &result.trap,
-                 s_trace_stream);
+      auto ok = func->Call(store_, action->args, result.values, &result.trap,
+                           s_trace_stream);
+      assert((ok == Result::Ok) == (!result.trap));
       result.types = func->type().results;
       if (verbose == RunVerbosity::Verbose) {
         WriteCall(s_stdout_stream.get(), action->field_name, func->type(),
@@ -1384,9 +1444,9 @@ ActionResult CommandRunner::RunAction(int line_number,
   return result;
 }
 
-wabt::Result CommandRunner::ReadInvalidTextModule(
-    std::string_view module_filename,
-    const std::string& header) {
+wabt::Result CommandRunner::ReadTextModule(std::string_view module_filename,
+                                           const std::string& header,
+                                           bool validate) {
   std::vector<uint8_t> file_data;
   wabt::Result result = ReadFile(module_filename, &file_data);
   Errors errors;
@@ -1396,6 +1456,11 @@ wabt::Result CommandRunner::ReadInvalidTextModule(
     std::unique_ptr<wabt::Module> module;
     WastParseOptions options(s_features);
     result = ParseWatModule(lexer.get(), &module, &errors, &options);
+
+    if (validate && Succeeded(result)) {
+      result =
+          ValidateModule(module.get(), &errors, ValidateOptions{s_features});
+    }
   }
 
   auto line_finder = lexer->MakeLineFinder();
@@ -1440,7 +1505,7 @@ wabt::Result CommandRunner::ReadInvalidModule(int line_number,
 
   switch (module_type) {
     case ModuleType::Text: {
-      return ReadInvalidTextModule(module_filename, header);
+      return ReadTextModule(module_filename, header, true);
     }
 
     case ModuleType::Binary: {
@@ -1453,6 +1518,61 @@ wabt::Result CommandRunner::ReadInvalidModule(int line_number,
       } else {
         return wabt::Result::Ok;
       }
+    }
+  }
+
+  WABT_UNREACHABLE;
+}
+
+wabt::Result CommandRunner::ReadMalformedBinaryModule(
+    std::string_view module_filename,
+    Errors* errors) {
+  std::vector<uint8_t> file_data;
+
+  CHECK_RESULT(ReadFile(module_filename, &file_data));
+
+  const bool kReadDebugNames = true;
+  const bool kStopOnFirstError = true;
+  const bool kFailOnCustomSectionError = true;
+  ReadBinaryOptions options(s_features, s_log_stream.get(), kReadDebugNames,
+                            kStopOnFirstError, kFailOnCustomSectionError);
+
+  class BinaryReaderErrorLogging : public BinaryReaderNop {
+    Errors* errors_;
+
+   public:
+    BinaryReaderErrorLogging(Errors* errors) : errors_(errors) {}
+
+    bool OnError(const Error& error) override {
+      errors_->push_back(error);
+      return true;
+    }
+  };
+
+  BinaryReaderErrorLogging reader_delegate{errors};
+  return ReadBinary(file_data.data(), file_data.size(), &reader_delegate,
+                    options);
+}
+
+wabt::Result CommandRunner::ReadMalformedModule(
+    int line_number,
+    std::string_view module_filename,
+    ModuleType module_type,
+    const char* desc) {
+  std::string header = StringPrintf(
+      "%s:%d: %s passed", source_filename_.c_str(), line_number, desc);
+
+  switch (module_type) {
+    case ModuleType::Text: {
+      return ReadTextModule(module_filename, header, false);
+    }
+
+    case ModuleType::Binary: {
+      Errors errors;
+      wabt::Result result = ReadMalformedBinaryModule(module_filename, &errors);
+      FormatErrorsToFile(errors, Location::Type::Binary, {}, stdout, header,
+                         PrintHeader::Once);
+      return result;
     }
   }
 
@@ -1500,6 +1620,12 @@ wabt::Result CommandRunner::OnModuleCommand(const ModuleCommand* command) {
     return wabt::Result::Error;
   }
 
+  if (!ValidIR(command->filename)) {
+    PrintError(command->line, "IR Validator thinks module is invalid: \"%s\"",
+               command->filename.c_str());
+    return wabt::Result::Error;
+  }
+
   RefVec imports;
   PopulateImports(module, &imports);
 
@@ -1535,10 +1661,17 @@ wabt::Result CommandRunner::OnActionCommand(const ActionCommand* command) {
 
 wabt::Result CommandRunner::OnAssertMalformedCommand(
     const AssertMalformedCommand* command) {
-  wabt::Result result = ReadInvalidModule(command->line, command->filename,
-                                          command->type, "assert_malformed");
+  wabt::Result result = ReadMalformedModule(command->line, command->filename,
+                                            command->type, "assert_malformed");
   if (Succeeded(result)) {
     PrintError(command->line, "expected module to be malformed: \"%s\"",
+               command->filename.c_str());
+    return wabt::Result::Error;
+  }
+
+  if (WellformedIR(command->filename)) {
+    PrintError(command->line,
+               "BinaryReaderIR thinks module is well-formed: \"%s\"",
                command->filename.c_str());
     return wabt::Result::Error;
   }
@@ -1572,6 +1705,12 @@ wabt::Result CommandRunner::OnAssertUnlinkableCommand(
     return wabt::Result::Error;
   }
 
+  if (!ValidIR(command->filename)) {
+    PrintError(command->line, "IR Validator thinks module is invalid: \"%s\"",
+               command->filename.c_str());
+    return wabt::Result::Error;
+  }
+
   RefVec imports;
   PopulateImports(module, &imports);
 
@@ -1599,6 +1738,12 @@ wabt::Result CommandRunner::OnAssertInvalidCommand(
     return wabt::Result::Error;
   }
 
+  if (ValidIR(command->filename)) {
+    PrintError(command->line, "IR Validator thinks module is valid: \"%s\"",
+               command->filename.c_str());
+    return wabt::Result::Error;
+  }
+
   return wabt::Result::Ok;
 }
 
@@ -1609,6 +1754,12 @@ wabt::Result CommandRunner::OnAssertUninstantiableCommand(
 
   if (!module) {
     PrintError(command->line, "unable to compile uninstantiable module: \"%s\"",
+               command->filename.c_str());
+    return wabt::Result::Error;
+  }
+
+  if (!ValidIR(command->filename)) {
+    PrintError(command->line, "IR Validator thinks module is invalid: \"%s\"",
                command->filename.c_str());
     return wabt::Result::Error;
   }
@@ -1774,6 +1925,11 @@ wabt::Result CommandRunner::CheckAssertReturnResult(
 
     case Type::ExternRef:
       ok = expected.value.value.Get<Ref>() == actual.value.Get<Ref>();
+      break;
+
+    case Type::ExnRef:
+      // FIXME is this correct?
+      ok = (actual.type == Type::ExnRef);
       break;
 
     default:

@@ -11,6 +11,9 @@ $ wasm2c test.wasm -o test.c
 $ wasm2c test.wasm --no-debug-names -o test.c
 ```
 
+The C code produced targets the C99 standard. If, however, the Wasm module uses
+Wasm threads/atomics, the code produced targets the C11 standard.
+
 ## Tutorial: .wat -> .wasm -> .c
 
 Let's look at a simple example of a factorial function.
@@ -106,11 +109,11 @@ int main(int argc, char** argv) {
 ## Compiling the wasm2c output
 
 To compile the executable, we need to use `main.c` and the generated `fac.c`.
-We'll also include `wasm-rt-impl.c` which has implementations of the various
+We'll also include `wasm-rt-impl.c` and `wasm-rt-mem-impl.c`, which have implementations of the various
 `wasm_rt_*` functions used by `fac.c` and `fac.h`.
 
 ```sh
-$ cc -o fac main.c fac.c wasm-rt-impl.c
+$ cc -o fac main.c fac.c wasm2c/wasm-rt-impl.c wasm2c/wasm-rt-mem-impl.c -Iwasm2c -lm
 ```
 
 A note on compiling with optimization: wasm2c relies on certain
@@ -137,6 +140,52 @@ fac(10) -> 3628800
 
 You can take a look at the all of these files in
 [wasm2c/examples/fac](/wasm2c/examples/fac).
+
+### Enabling extra sanity checks
+
+Wasm2c provides a macro `WASM_RT_SANITY_CHECKS` that if defined enables
+additional sanity checks in the produced Wasm2c code. Note that this may have a
+high performance overhead, and is thus only recommended for debug builds.
+
+### Enabling Segue (a Linux x86_64 target specific optimization)
+
+Wasm2c can use the "Segue" optimization if allowed. The segue optimization uses
+an x86 segment register to store the location of Wasm's linear memory, when
+compiling a Wasm module with clang, running on x86_64 Linux, the macro
+`WASM_RT_ALLOW_SEGUE` is defined, and the flag `-mfsgsbase` is passed to clang.
+Segue is not used if
+
+1. The Wasm module uses a more than a single unshared imported or exported
+   memory
+2. The wasm2c code is compiled with GCC. Segue requires intrinsics for
+   (rd|wr)gsbase, "address namespaces" for accessing pointers, and support for
+   memcpy on pointers with custom "address namespaces". GCC does not support the
+   memcpy requirement.
+3. The code is compiled for Windows as Windows doesn't restore the segment
+   register on context switch.
+
+The wasm2c generated code automatically sets the unused segment register (the
+`%gs` register on x86_64 Linux) during the function calls into wasm2c generated
+module, restores it after calls to external modules etc. Any host function
+written in C would continue to work without changes as C code does not modify
+the unused segment register `%gs` (See
+[here](https://www.kernel.org/doc/html/next/x86/x86_64/fsgs.html) for details).
+However, any host functions written in assembly that clobber the free segment
+register must restore the value of this register prior to executing or returning
+control to wasm2c generated code.
+
+As an additional optimization, if the host program does not use the `%gs`
+segment register for any other purpose (which is typically the case in most
+programs), you can additionally allow wasm2c to unconditionally overwrite the
+value of the `%gs` register without restoring the old value. This can be done
+defining the macro `WASM_RT_SEGUE_FREE_SEGMENT`.
+
+You can test the performance of the Segue optimization by running Dhrystone with
+and without Segue:
+
+```bash
+cd wasm2c/benchmarks/segue && make
+```
 
 ## Looking at the generated header, `fac.h`
 
@@ -248,16 +297,36 @@ typedef struct {
 
 Next is the definition of a memory instance. The `data` field is a pointer to
 `size` bytes of linear memory. The `size` field of `wasm_rt_memory_t` is the
-current size of the memory instance in bytes, whereas `pages` is the current
-size in pages (65536 bytes.) `max_pages` is the maximum number of pages as
-specified by the module, or `0xffffffff` if there is no limit.
+current size of the memory instance in bytes, `pages` is the current
+size in pages, and `page_size` contains the page size in bytes (65,536 by default).
+`max_pages` is the maximum number of pages specified by the module or allowed
+by the memory index type (`is64` is true for memories that can grow to 2^64 bytes;
+`false` for memories limited to 2^32 bytes).
 
 ```c
 typedef struct {
   uint8_t* data;
-  uint32_t pages, max_pages;
-  uint32_t size;
+  uint32_t page_size;
+  uint64_t pages, max_pages;
+  uint64_t size;
+  bool is64;
 } wasm_rt_memory_t;
+```
+
+This is followed by the definition of a shared memory instance. This is similar
+to a regular memory instance, but represents memory that can be used by multiple
+Wasm instances, and thus enforces a minimum amount of memory order on
+operations. The Shared memory definition has one additional member, `mem_lock`,
+which is a lock that is used during memory grow operations for thread safety.
+
+```c
+typedef struct {
+  _Atomic volatile uint8_t* data;
+  uint64_t pages, max_pages;
+  uint64_t size;
+  bool is64;
+  mtx_t mem_lock;
+} wasm_rt_shared_memory_t;
 ```
 
 Next is the definition of a table instance. The `data` field is a pointer to
@@ -287,14 +356,19 @@ bool wasm_rt_is_initialized(void);
 void wasm_rt_free(void);
 void wasm_rt_trap(wasm_rt_trap_t) __attribute__((noreturn));
 const char* wasm_rt_strerror(wasm_rt_trap_t trap);
-void wasm_rt_allocate_memory(wasm_rt_memory_t*, uint32_t initial_pages, uint32_t max_pages, bool is64);
+void wasm_rt_allocate_memory(wasm_rt_memory_t*, uint32_t initial_pages, uint32_t max_pages, bool is64, uint32_t page_size);
 uint32_t wasm_rt_grow_memory(wasm_rt_memory_t*, uint32_t pages);
 void wasm_rt_free_memory(wasm_rt_memory_t*);
+void wasm_rt_allocate_memory_shared(wasm_rt_shared_memory_t*, uint32_t initial_pages, uint32_t max_pages, bool is64, uint32_t page_size);
+uint32_t wasm_rt_grow_memory_shared(wasm_rt_shared_memory_t*, uint32_t pages);
+void wasm_rt_free_memory_shared(wasm_rt_shared_memory_t*);
 void wasm_rt_allocate_funcref_table(wasm_rt_table_t*, uint32_t elements, uint32_t max_elements);
 void wasm_rt_allocate_externref_table(wasm_rt_externref_table_t*, uint32_t elements, uint32_t max_elements);
 void wasm_rt_free_funcref_table(wasm_rt_table_t*);
 void wasm_rt_free_externref_table(wasm_rt_table_t*);
 uint32_t wasm_rt_call_stack_depth; /* on platforms that don't use the signal handler to detect exhaustion */
+void wasm_rt_init_thread(void);
+void wasm_rt_free_thread(void);
 ```
 
 `wasm_rt_init` must be called by the embedder before anything else, to
@@ -305,26 +379,39 @@ runtime has been initialized.
 `wasm_rt_trap` is a function that is called when the module traps. Some possible
 implementations are to throw a C++ exception, or to just abort the program
 execution. The default runtime included in wasm2c unwinds the stack using
-`longjmp`. You can overide this call to `longjmp` from the embeder by defining a
-custom trap handler with the signature `void
-wasm2c_custom_trap_handler(wasm_rt_trap_t code)` and compiling the runtime with
-the with macro definition `#define WASM_RT_MEMCHECK_SIGNAL_HANDLER
-wasm2c_custom_trap_handler`. It is recommended that you add this macro
-definition via a compiler flag
-(`-DWASM_RT_MEMCHECK_SIGNAL_HANDLER=wasm2c_custom_trap_handler` on clang/gcc).
+`longjmp`. The host can overide this call to `longjmp` by compiling the runtime
+with `WASM_RT_TRAP_HANDLER` defined to the name of a trap handler function. The
+handler function should be a function taking a `wasm_rt_trap_t` as a parameter
+and returning `void`. e.g. `-DWASM_RT_TRAP_HANDLER=my_trap_handler`
 
-`wasm_rt_allocate_memory` initializes a memory instance, and allocates at least
-enough space for the given number of initial pages. The memory must be cleared
-to zero. The `is64` parameter indicates if the memory is indexed with
-an i32 or i64 address.
+`wasm_rt_allocate_memory` initializes a memory instance, and allocates
+at least enough space for the given number of initial pages, each of
+size `page_size` (which must be `WASM_DEFAULT_PAGE_SIZE`, equal to 64
+KiB, unless using the custom-page-sizes feature). The memory must be
+cleared to zero. The `is64` parameter indicates if the memory is
+indexed with an i32 or i64 address.
 
-`wasm_rt_grow_memory` must grow the given memory instance by the given number
-of pages. If there isn't enough memory to do so, or the new page count would be
+`wasm_rt_grow_memory` must grow the given memory instance by the given number of
+pages. If there isn't enough memory to do so, or the new page count would be
 greater than the maximum page count, the function must fail by returning
 `0xffffffff`. If the function succeeds, it must return the previous size of the
-memory instance, in pages.
+memory instance, in pages. The host can optionally be notified of failures by
+compiling the runtime with `WASM_RT_GROW_FAILED_HANDLER` defined to the name of
+a handler function.  The handler function should be a function taking no
+arguments and returning `void` . e.g.
+`-DWASM_RT_GROW_FAILED_HANDLER=my_growfail_handler`
 
 `wasm_rt_free_memory` frees the memory instance.
+
+`wasm_rt_allocate_memory_shared` initializes a memory instance that can be
+shared by different Wasm threads. Its operation is otherwise similar to
+`wasm_rt_allocate_memory`.
+
+`wasm_rt_grow_memory_shared` must grow the given shared memory instance by the
+given number of pages. It's operation is otherwise similar to
+`wasm_rt_grow_memory`.
+
+`wasm_rt_free_memory_shared` frees the shared memory instance.
 
 `wasm_rt_allocate_funcref_table` and the similar `..._externref_table`
 initialize a table instance of the given type, and allocate at least
@@ -338,10 +425,16 @@ shared between modules, it must be defined only once, by the embedder.
 It is only used on platforms that don't use the signal handler to detect
 exhaustion.
 
+`wasm_rt_init_thread` and `wasm_rt_free_thread` are used to initialize
+and free the runtime state for a given thread (other than the one that
+called `wasm_rt_init`). An example can be found in
+`wasm2c/examples/threads`.
+
 ### Runtime support for exception handling
 
-Several additional symbols must be defined if wasm2c is being run with
-support for exceptions (`--enable-exceptions`):
+Several additional symbols must be defined if wasm2c is being run with support
+for exceptions (`--enable-exceptions`). These are defined in
+`wasm-rt-exceptions.h`. These symbols are:
 
 ```c
 void wasm_rt_load_exception(const char* tag, uint32_t size, const void* values);
@@ -356,7 +449,7 @@ wasm_rt_try(target)
 ```
 
 A C implementation of these functions is also available in
-[`wasm-rt-impl.h`](wasm-rt-impl.h) and [`wasm-rt-impl.c`](wasm-rt-impl.c).
+[`wasm-rt-exceptions-impl.c`](wasm-rt-exceptions-impl.c).
 
 `wasm_rt_load_exception` sets the active exception to a given tag, size, and contents.
 
@@ -410,7 +503,7 @@ u32 w2c_fac_fac(w2c_fac*, u32);
 ## Handling other kinds of imports and exports of modules
 
 Exported functions are handled by declaring a prefixed equivalent
-function in the header. If a module is imports a function, `wasm2c`
+function in the header. If a module imports a function, `wasm2c`
 declares the function in the output header file, and the host function
 is responsible for defining the function.
 
@@ -458,24 +551,24 @@ module doesn't use any globals, memory or tables.
 The most interesting part is the definition of the function `fac`:
 
 ```c
-static u32 w2c_fac_fac_0(w2c_fac* instance, u32 w2c_p0) {
+static u32 w2c_fac_fac_0(w2c_fac* instance, u32 var_p0) {
   FUNC_PROLOGUE;
-  u32 w2c_i0, w2c_i1, w2c_i2;
-  w2c_i0 = w2c_p0;
-  w2c_i1 = 0u;
-  w2c_i0 = w2c_i0 == w2c_i1;
-  if (w2c_i0) {
-    w2c_i0 = 1u;
+  u32 var_i0, var_i1, var_i2;
+  var_i0 = var_p0;
+  var_i1 = 0u;
+  var_i0 = var_i0 == var_i1;
+  if (var_i0) {
+    var_i0 = 1u;
   } else {
-    w2c_i0 = w2c_p0;
-    w2c_i1 = w2c_p0;
-    w2c_i2 = 1u;
-    w2c_i1 -= w2c_i2;
-    w2c_i1 = w2c_fac_fac_0(instance, w2c_i1);
-    w2c_i0 *= w2c_i1;
+    var_i0 = var_p0;
+    var_i1 = var_p0;
+    var_i2 = 1u;
+    var_i1 -= var_i2;
+    var_i1 = w2c_fac_fac_0(instance, var_i1);
+    var_i0 *= var_i1;
   }
   FUNC_EPILOGUE;
-  return w2c_i0;
+  return var_i0;
 }
 ```
 
@@ -570,8 +663,8 @@ int main(int argc, char** argv) {
 
   /* Create two `host` instances to store the memory and current string */
   w2c_host host_1, host_2;
-  wasm_rt_allocate_memory(&host_1.memory, 1, 1, false);
-  wasm_rt_allocate_memory(&host_2.memory, 1, 1, false);
+  wasm_rt_allocate_memory(&host_1.memory, 1, 1, false, WASM_DEFAULT_PAGE_SIZE);
+  wasm_rt_allocate_memory(&host_2.memory, 1, 1, false, WASM_DEFAULT_PAGE_SIZE);
 
   /* Construct the `rot13` module instances */
   w2c_rot13 rot13_1, rot13_2;

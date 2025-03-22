@@ -1,6 +1,6 @@
 ;;; TOOL: run-spec-wasm2c
-;;; STDIN_FILE: third_party/testsuite/proposals/memory64/memory.wast
+;;; STDIN_FILE: test/old-spec/proposals/memory64/memory.wast
 ;;; ARGS*: --enable-memory64
 (;; STDOUT ;;;
-45/45 tests passed.
+53/53 tests passed.
 ;;; STDOUT ;;)

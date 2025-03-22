@@ -15,7 +15,7 @@
 #
 
 cmake_minimum_required(VERSION 3.16)
-project(WABT LANGUAGES C CXX VERSION 1.0.32)
+project(WABT LANGUAGES C CXX VERSION 1.0.37)
 
 include(GNUInstallDirs)
 
@@ -23,6 +23,11 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
+
+# 10.13 doesn't support std::optional::value (becuase it depends on
+# std::bad_optional_acces).
+# See: https://github.com/WebAssembly/wabt/issues/2527
+set(CMAKE_OSX_DEPLOYMENT_TARGET "10.14" CACHE STRING "Minimum OS X deployment version")
 
 # Check if wabt is being used directly or via add_subdirectory, FetchContent, etc
 string(COMPARE EQUAL "${CMAKE_CURRENT_SOURCE_DIR}" "${CMAKE_SOURCE_DIR}" PROJECT_IS_TOP_LEVEL)
@@ -98,6 +103,7 @@ include(CheckSymbolExists)
 
 check_include_file("alloca.h" HAVE_ALLOCA_H)
 check_include_file("unistd.h" HAVE_UNISTD_H)
+check_include_file("setjmp.h" HAVE_SETJMP_H)
 check_symbol_exists(snprintf "stdio.h" HAVE_SNPRINTF)
 check_symbol_exists(strcasecmp "strings.h" HAVE_STRCASECMP)
 
@@ -254,20 +260,32 @@ set(CMAKE_MODULE_PATH ${CMAKE_MODULE_PATH} ${WABT_SOURCE_DIR}/cmake)
 set(TEMPLATE_CMAKE ${WABT_SOURCE_DIR}/scripts/gen-wasm2c-templates.cmake)
 
 add_custom_command(
-  OUTPUT wasm2c_header_top.cc wasm2c_header_bottom.cc wasm2c_source_includes.cc wasm2c_source_declarations.cc
+  OUTPUT gen-wasm2c-prebuilt
 
-  COMMAND ${CMAKE_COMMAND} -D out="wasm2c_header_top.cc" -D in="${WABT_SOURCE_DIR}/src/template/wasm2c.top.h" -D symbol="s_header_top" -P ${TEMPLATE_CMAKE}
-  COMMAND ${CMAKE_COMMAND} -D out="wasm2c_header_bottom.cc" -D in="${WABT_SOURCE_DIR}/src/template/wasm2c.bottom.h" -D symbol="s_header_bottom" -P ${TEMPLATE_CMAKE}
-  COMMAND ${CMAKE_COMMAND} -D out="wasm2c_source_includes.cc" -D in="${WABT_SOURCE_DIR}/src/template/wasm2c.includes.c" -D symbol="s_source_includes" -P ${TEMPLATE_CMAKE}
-  COMMAND ${CMAKE_COMMAND} -D out="wasm2c_source_declarations.cc" -D in="${WABT_SOURCE_DIR}/src/template/wasm2c.declarations.c" -D symbol="s_source_declarations" -P ${TEMPLATE_CMAKE}
+  COMMAND ${CMAKE_COMMAND} -D out="${WABT_SOURCE_DIR}/src/prebuilt/wasm2c_header_top.cc" -D in="${WABT_SOURCE_DIR}/src/template/wasm2c.top.h" -D symbol="s_header_top" -P ${TEMPLATE_CMAKE}
+  COMMAND ${CMAKE_COMMAND} -D out="${WABT_SOURCE_DIR}/src/prebuilt/wasm2c_header_bottom.cc" -D in="${WABT_SOURCE_DIR}/src/template/wasm2c.bottom.h" -D symbol="s_header_bottom" -P ${TEMPLATE_CMAKE}
+  COMMAND ${CMAKE_COMMAND} -D out="${WABT_SOURCE_DIR}/src/prebuilt/wasm2c_source_includes.cc" -D in="${WABT_SOURCE_DIR}/src/template/wasm2c.includes.c" -D symbol="s_source_includes" -P ${TEMPLATE_CMAKE}
+  COMMAND ${CMAKE_COMMAND} -D out="${WABT_SOURCE_DIR}/src/prebuilt/wasm2c_source_declarations.cc" -D in="${WABT_SOURCE_DIR}/src/template/wasm2c.declarations.c" -D symbol="s_source_declarations" -P ${TEMPLATE_CMAKE}
+  COMMAND ${CMAKE_COMMAND} -D out="${WABT_SOURCE_DIR}/src/prebuilt/wasm2c_simd_source_declarations.cc" -D in="${WABT_SOURCE_DIR}/src/template/wasm2c_simd.declarations.c" -D symbol="s_simd_source_declarations" -P ${TEMPLATE_CMAKE}
+  COMMAND ${CMAKE_COMMAND} -D out="${WABT_SOURCE_DIR}/src/prebuilt/wasm2c_atomicops_source_declarations.cc" -D in="${WABT_SOURCE_DIR}/src/template/wasm2c_atomicops.declarations.c" -D symbol="s_atomicops_source_declarations" -P ${TEMPLATE_CMAKE}
+  COMMAND ${CMAKE_COMMAND} -E touch gen-wasm2c-prebuilt
 
   DEPENDS ${WABT_SOURCE_DIR}/src/template/wasm2c.top.h
   ${WABT_SOURCE_DIR}/src/template/wasm2c.bottom.h
   ${WABT_SOURCE_DIR}/src/template/wasm2c.includes.c
   ${WABT_SOURCE_DIR}/src/template/wasm2c.declarations.c
+  ${WABT_SOURCE_DIR}/src/template/wasm2c_simd.declarations.c
+  ${WABT_SOURCE_DIR}/src/template/wasm2c_atomicops.declarations.c
 )
 
-set(CWRITER_TEMPLATE_SRC wasm2c_header_top.cc wasm2c_header_bottom.cc wasm2c_source_includes.cc wasm2c_source_declarations.cc)
+add_custom_target(gen-wasm2c-prebuilt-target DEPENDS gen-wasm2c-prebuilt)
+
+set(CWRITER_TEMPLATE_SRC ${WABT_SOURCE_DIR}/src/prebuilt/wasm2c_header_top.cc
+                         ${WABT_SOURCE_DIR}/src/prebuilt/wasm2c_header_bottom.cc
+                         ${WABT_SOURCE_DIR}/src/prebuilt/wasm2c_source_includes.cc
+                         ${WABT_SOURCE_DIR}/src/prebuilt/wasm2c_source_declarations.cc
+                         ${WABT_SOURCE_DIR}/src/prebuilt/wasm2c_simd_source_declarations.cc
+                         ${WABT_SOURCE_DIR}/src/prebuilt/wasm2c_atomicops_source_declarations.cc)
 
 add_custom_target(everything)
 
@@ -379,6 +397,7 @@ set(WABT_LIBRARY_H
 set(WABT_LIBRARY_SRC ${WABT_LIBRARY_CC} ${WABT_LIBRARY_H})
 
 add_library(wabt STATIC ${WABT_LIBRARY_SRC})
+add_dependencies(wabt gen-wasm2c-prebuilt-target)
 add_library(wabt::wabt ALIAS wabt)
 
 if (HAVE_OPENSSL_SHA_H)
@@ -408,34 +427,40 @@ if (WABT_INSTALL_RULES)
   )
 endif ()
 
-add_library(wasm-rt-impl STATIC wasm2c/wasm-rt-impl.c wasm2c/wasm-rt-impl.h)
-add_library(wabt::wasm-rt-impl ALIAS wasm-rt-impl)
-if (WABT_BIG_ENDIAN)
-  target_compile_definitions(wasm-rt-impl PUBLIC WABT_BIG_ENDIAN=1)
-endif ()
+if (HAVE_SETJMP_H)
+  set(WASM_RT_FILES "wasm2c/wasm-rt-impl.h" "wasm2c/wasm-rt-impl.c" "wasm2c/wasm-rt-exceptions-impl.c" "wasm2c/wasm-rt-mem-impl.c" "wasm2c/wasm-rt-impl-tableops.inc" "wasm2c/wasm-rt-mem-impl-helper.inc")
 
-if (WABT_INSTALL_RULES)
-  install(
-    TARGETS wasm-rt-impl
-    EXPORT wabt-targets
-    COMPONENT wabt-development
-    INCLUDES DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}"
-  )
-  install(
-    FILES "wasm2c/wasm-rt.h"
-    TYPE INCLUDE
-    COMPONENT wabt-development
-  )
-  install(
-    FILES "wasm2c/wasm-rt-impl.h" "wasm2c/wasm-rt-impl.c"
-    DESTINATION "${CMAKE_INSTALL_DATADIR}/wabt/wasm2c"
-    COMPONENT wabt-development
-  )
+  add_library(wasm-rt-impl STATIC ${WASM_RT_FILES})
+  target_link_libraries(wasm-rt-impl ${CMAKE_THREAD_LIBS_INIT})
+  add_library(wabt::wasm-rt-impl ALIAS wasm-rt-impl)
+  if (WABT_BIG_ENDIAN)
+    target_compile_definitions(wasm-rt-impl PUBLIC WABT_BIG_ENDIAN=1)
+  endif ()
+
+  if (WABT_INSTALL_RULES)
+    install(
+      TARGETS wasm-rt-impl
+      EXPORT wabt-targets
+      COMPONENT wabt-development
+      INCLUDES DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}"
+    )
+    install(
+      FILES "wasm2c/wasm-rt.h" "wasm2c/wasm-rt-exceptions.h"
+      TYPE INCLUDE
+      COMPONENT wabt-development
+    )
+    install(
+      FILES ${WASM_RT_FILES}
+      DESTINATION "${CMAKE_INSTALL_DATADIR}/wabt/wasm2c"
+      COMPONENT wabt-development
+    )
+  endif ()
 endif ()
 
 if (BUILD_FUZZ_TOOLS)
   set(FUZZ_FLAGS "-fsanitize=fuzzer,address")
   add_library(wabt-fuzz STATIC ${WABT_LIBRARY_SRC})
+  target_link_libraries(wabt-fuzz PUBLIC wabt)
   set_target_properties(wabt-fuzz
     PROPERTIES
     COMPILE_FLAGS "${FUZZ_FLAGS}"
@@ -487,10 +512,8 @@ function(wabt_executable)
   target_link_libraries(${EXE_NAME} ${EXE_LIBS})
 
   if (EMSCRIPTEN)
-    # build to JS for now, as node.js doesn't have code caching for wasm yet,
-    # and wasm startup times are slower
     set(EXTRA_LINK_FLAGS
-      "${EXTRA_LINK_FLAGS} -s NODERAWFS -s SINGLE_FILE -s WASM=0 -Oz -s ALLOW_MEMORY_GROWTH=1"
+      "${EXTRA_LINK_FLAGS} -sNODERAWFS -Oz -sALLOW_MEMORY_GROWTH"
     )
   endif ()
 
@@ -540,10 +563,10 @@ if (BUILD_TOOLS)
     INSTALL
   )
 
-  # wasm-opcodecnt
+  # wasm-stats
   wabt_executable(
-    NAME wasm-opcodecnt
-    SOURCES src/tools/wasm-opcodecnt.cc src/binary-reader-opcnt.cc
+    NAME wasm-stats
+    SOURCES src/tools/wasm-stats.cc src/binary-reader-stats.cc
     INSTALL
   )
 
@@ -555,7 +578,11 @@ if (BUILD_TOOLS)
   )
 
   if(WITH_WASI)
+    # uvwasi uses the deprecated FetchContent_Populate function, disable it to avoid build error
+    set(CMAKE_POLICY_DEFAULT_CMP0169_BACK ${CMAKE_POLICY_DEFAULT_CMP0169})
+    set(CMAKE_POLICY_DEFAULT_CMP0169 OLD)
     add_subdirectory("third_party/uvwasi" EXCLUDE_FROM_ALL)
+    set(CMAKE_POLICY_DEFAULT_CMP0169 ${CMAKE_POLICY_DEFAULT_CMP0169_BACK})
     include_directories(third_party/uvwasi/include)
     add_definitions(-DWITH_WASI)
     set(INTERP_LIBS uvwasi_a)
@@ -630,6 +657,10 @@ if (BUILD_TESTS)
     set(WASM2C_CFLAGS "${WASM2C_CFLAGS} -g -O0")
   endif ()
 
+  if (WABT_BIG_ENDIAN)
+    set(WASM2C_CFLAGS "${WASM2C_CFLAGS} -DWABT_BIG_ENDIAN=1")
+  endif ()
+
   if (DEFINED CMAKE_OSX_SYSROOT)
     set(WASM2C_CFLAGS "${WASM2C_CFLAGS} -isysroot ${CMAKE_OSX_SYSROOT}")
   endif ()
@@ -642,7 +673,7 @@ if (BUILD_TESTS)
   find_package(Threads REQUIRED)
 
   # Python 3.5 is the version shipped in Ubuntu Xenial
-  find_package(PythonInterp 3.5 REQUIRED)
+  find_package(Python3 3.5 REQUIRED COMPONENTS Interpreter)
 
   if (NOT USE_SYSTEM_GTEST)
     if (NOT EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/third_party/gtest/googletest)
@@ -682,7 +713,6 @@ if (BUILD_TESTS)
   # wabt-unittests
   set(UNITTESTS_SRCS
     src/test-binary-reader.cc
-    src/test-circular-array.cc
     src/test-interp.cc
     src/test-intrusive-list.cc
     src/test-literal.cc
@@ -701,7 +731,7 @@ if (BUILD_TESTS)
   set(RUN_TESTS_PY ${WABT_SOURCE_DIR}/test/run-tests.py)
 
   add_custom_target(run-tests
-    COMMAND ${CMAKE_COMMAND} -E env WASM2C_CC=${CMAKE_C_COMPILER} WASM2C_CFLAGS=${WASM2C_CFLAGS} ${PYTHON_EXECUTABLE} ${RUN_TESTS_PY} --bindir $<TARGET_FILE_DIR:wat2wasm>
+    COMMAND ${CMAKE_COMMAND} -E env WASM2C_CC=${CMAKE_C_COMPILER} WASM2C_CFLAGS=${WASM2C_CFLAGS} ${Python3_EXECUTABLE} ${RUN_TESTS_PY} --bindir $<TARGET_FILE_DIR:wat2wasm>
     DEPENDS ${WABT_EXECUTABLES}
     WORKING_DIRECTORY ${WABT_SOURCE_DIR}
     USES_TERMINAL
@@ -715,7 +745,7 @@ if (BUILD_TESTS)
   )
 
   add_custom_target(run-c-api-tests
-    COMMAND ${PYTHON_EXECUTABLE} ${WABT_SOURCE_DIR}/test/run-c-api-examples.py --bindir $<TARGET_FILE_DIR:wat2wasm>
+    COMMAND ${Python3_EXECUTABLE} ${WABT_SOURCE_DIR}/test/run-c-api-examples.py --bindir $<TARGET_FILE_DIR:wat2wasm>
     WORKING_DIRECTORY ${WABT_SOURCE_DIR}
     USES_TERMINAL
   )
@@ -794,15 +824,16 @@ if (EMSCRIPTEN)
   set(EMSCRIPTEN_EXPORTS ${WABT_SOURCE_DIR}/src/emscripten-exports.txt)
 
   set(LIBWABT_LINK_FLAGS
-    -s SINGLE_FILE
     --post-js ${WABT_POST_JS}
-    -s EXPORTED_FUNCTIONS=\"@${EMSCRIPTEN_EXPORTS}\"
-    -s RESERVED_FUNCTION_POINTERS=10
-    -s NO_EXIT_RUNTIME=1
-    -s ALLOW_MEMORY_GROWTH=1
-    -s MODULARIZE=1
-    -s EXPORT_NAME=\"'WabtModule'\"
-    -s WASM=0
+    -sSINGLE_FILE
+    -sEXPORTED_FUNCTIONS=@${EMSCRIPTEN_EXPORTS}
+    -sRESERVED_FUNCTION_POINTERS=10
+    -sNO_EXIT_RUNTIME=1
+    -sALLOW_MEMORY_GROWTH=1
+    -sMODULARIZE=1
+    -sEXPORT_NAME=WabtModule
+    -sWASM=0
+    -sEXPORTED_RUNTIME_METHODS=writeAsciiToMemory
     -Oz
   )
   string(REPLACE ";" " " LIBWABT_LINK_FLAGS_STR "${LIBWABT_LINK_FLAGS}")

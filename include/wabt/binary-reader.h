@@ -59,6 +59,13 @@ struct TypeMut {
 };
 using TypeMutVector = std::vector<TypeMut>;
 
+struct CatchClause {
+  CatchKind kind;
+  Index tag;
+  Index depth;
+};
+using CatchClauseVector = std::vector<CatchClause>;
+
 class BinaryReaderDelegate {
  public:
   struct State {
@@ -125,7 +132,8 @@ class BinaryReaderDelegate {
                                 std::string_view module_name,
                                 std::string_view field_name,
                                 Index memory_index,
-                                const Limits* page_limits) = 0;
+                                const Limits* page_limits,
+                                uint32_t page_size) = 0;
   virtual Result OnImportGlobal(Index import_index,
                                 std::string_view module_name,
                                 std::string_view field_name,
@@ -156,7 +164,9 @@ class BinaryReaderDelegate {
   /* Memory section */
   virtual Result BeginMemorySection(Offset size) = 0;
   virtual Result OnMemoryCount(Index count) = 0;
-  virtual Result OnMemory(Index index, const Limits* limits) = 0;
+  virtual Result OnMemory(Index index,
+                          const Limits* limits,
+                          uint32_t page_size) = 0;
   virtual Result EndMemorySection() = 0;
 
   /* Global section */
@@ -188,6 +198,7 @@ class BinaryReaderDelegate {
   virtual Result BeginFunctionBody(Index index, Offset size) = 0;
   virtual Result OnLocalDeclCount(Index count) = 0;
   virtual Result OnLocalDecl(Index decl_index, Index count, Type type) = 0;
+  virtual Result EndLocalDecls() = 0;
 
   /* Function expressions; called between BeginFunctionBody and
    EndFunctionBody */
@@ -269,7 +280,7 @@ class BinaryReaderDelegate {
   virtual Result OnLocalSetExpr(Index local_index) = 0;
   virtual Result OnLocalTeeExpr(Index local_index) = 0;
   virtual Result OnLoopExpr(Type sig_type) = 0;
-  virtual Result OnMemoryCopyExpr(Index srcmemidx, Index destmemidx) = 0;
+  virtual Result OnMemoryCopyExpr(Index destmemidx, Index srcmemidx) = 0;
   virtual Result OnDataDropExpr(Index segment_index) = 0;
   virtual Result OnMemoryFillExpr(Index memidx) = 0;
   virtual Result OnMemoryGrowExpr(Index memidx) = 0;
@@ -298,7 +309,10 @@ class BinaryReaderDelegate {
                              Address alignment_log2,
                              Address offset) = 0;
   virtual Result OnThrowExpr(Index tag_index) = 0;
+  virtual Result OnThrowRefExpr() = 0;
   virtual Result OnTryExpr(Type sig_type) = 0;
+  virtual Result OnTryTableExpr(Type sig_type,
+                                const CatchClauseVector& catches) = 0;
 
   virtual Result OnUnaryExpr(Opcode opcode) = 0;
   virtual Result OnTernaryExpr(Opcode opcode) = 0;
@@ -339,10 +353,8 @@ class BinaryReaderDelegate {
   virtual Result EndElemSegmentInitExpr(Index index) = 0;
   virtual Result OnElemSegmentElemType(Index index, Type elem_type) = 0;
   virtual Result OnElemSegmentElemExprCount(Index index, Index count) = 0;
-  virtual Result OnElemSegmentElemExpr_RefNull(Index segment_index,
-                                               Type type) = 0;
-  virtual Result OnElemSegmentElemExpr_RefFunc(Index segment_index,
-                                               Index func_index) = 0;
+  virtual Result BeginElemExpr(Index elem_index, Index expr_index) = 0;
+  virtual Result EndElemExpr(Index elem_index, Index expr_index) = 0;
   virtual Result EndElemSegment(Index index) = 0;
   virtual Result EndElemSection() = 0;
 
@@ -426,6 +438,13 @@ class BinaryReaderDelegate {
   virtual Result OnFeature(uint8_t prefix, std::string_view name) = 0;
   virtual Result EndTargetFeaturesSection() = 0;
 
+  /* Generic custom section */
+  virtual Result BeginGenericCustomSection(Offset size) = 0;
+  virtual Result OnGenericCustomSection(std::string_view name,
+                                        const void* data,
+                                        Offset size) = 0;
+  virtual Result EndGenericCustomSection() = 0;
+
   /* Linking section */
   virtual Result BeginLinkingSection(Offset size) = 0;
   virtual Result OnSymbolCount(Index count) = 0;
@@ -460,7 +479,7 @@ class BinaryReaderDelegate {
                                Address alignment_log2,
                                uint32_t flags) = 0;
   virtual Result OnInitFunctionCount(Index count) = 0;
-  virtual Result OnInitFunction(uint32_t priority, Index function_index) = 0;
+  virtual Result OnInitFunction(uint32_t priority, Index symbol_index) = 0;
   virtual Result OnComdatCount(Index count) = 0;
   virtual Result OnComdatBegin(std::string_view name,
                                uint32_t flags,

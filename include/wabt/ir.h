@@ -21,6 +21,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <memory>
+#include <set>
 #include <string>
 #include <string_view>
 #include <type_traits>
@@ -310,6 +311,13 @@ class FuncType : public TypeEntry {
   Type GetResultType(Index index) const { return sig.GetResultType(index); }
 
   FuncSignature sig;
+
+  // The BinaryReaderIR tracks whether a FuncType is the target of a tailcall
+  // (via a return_call_indirect). wasm2c (CWriter) uses this information to
+  // limit its output in some cases.
+  struct {
+    bool tailcall = false;
+  } features_used;
 };
 
 struct Field {
@@ -414,7 +422,9 @@ enum class ExprType {
   TableFill,
   Ternary,
   Throw,
+  ThrowRef,
   Try,
+  TryTable,
   Unary,
   Unreachable,
 
@@ -451,6 +461,21 @@ struct Catch {
   }
 };
 using CatchVector = std::vector<Catch>;
+
+struct TableCatch {
+  explicit TableCatch(const Location& loc = Location()) : loc(loc) {}
+  Location loc;
+  Var tag;
+  Var target;
+  CatchKind kind;
+  bool IsCatchAll() const {
+    return kind == CatchKind::CatchAll || kind == CatchKind::CatchAllRef;
+  }
+  bool IsRef() const {
+    return kind == CatchKind::CatchRef || kind == CatchKind::CatchAllRef;
+  }
+};
+using TryTableVector = std::vector<TableCatch>;
 
 enum class TryKind { Plain, Catch, Delegate };
 
@@ -493,21 +518,22 @@ class MemoryExpr : public ExprMixin<TypeEnum> {
 template <ExprType TypeEnum>
 class MemoryBinaryExpr : public ExprMixin<TypeEnum> {
  public:
-  MemoryBinaryExpr(Var srcmemidx,
-                   Var destmemidx,
+  MemoryBinaryExpr(Var destmemidx,
+                   Var srcmemidx,
                    const Location& loc = Location())
       : ExprMixin<TypeEnum>(loc),
-        srcmemidx(srcmemidx),
-        destmemidx(destmemidx) {}
+        destmemidx(destmemidx),
+        srcmemidx(srcmemidx) {}
 
-  Var srcmemidx;
   Var destmemidx;
+  Var srcmemidx;
 };
 
 using DropExpr = ExprMixin<ExprType::Drop>;
 using NopExpr = ExprMixin<ExprType::Nop>;
 using ReturnExpr = ExprMixin<ExprType::Return>;
 using UnreachableExpr = ExprMixin<ExprType::Unreachable>;
+using ThrowRefExpr = ExprMixin<ExprType::ThrowRef>;
 
 using MemoryGrowExpr = MemoryExpr<ExprType::MemoryGrow>;
 using MemorySizeExpr = MemoryExpr<ExprType::MemorySize>;
@@ -735,6 +761,15 @@ class IfExpr : public ExprMixin<ExprType::If> {
   Location false_end_loc;
 };
 
+class TryTableExpr : public ExprMixin<ExprType::TryTable> {
+ public:
+  explicit TryTableExpr(const Location& loc = Location())
+      : ExprMixin<ExprType::TryTable>(loc) {}
+
+  Block block;
+  TryTableVector catches;
+};
+
 class TryExpr : public ExprMixin<ExprType::Try> {
  public:
   explicit TryExpr(const Location& loc = Location())
@@ -893,6 +928,13 @@ struct Func {
   BindingHash bindings;
   ExprList exprs;
   Location loc;
+
+  // For a subset of features, the BinaryReaderIR tracks whether they are
+  // actually used by the function. wasm2c (CWriter) uses this information to
+  // limit its output in some cases.
+  struct {
+    bool tailcall = false;
+  } features_used;
 };
 
 struct Global {
@@ -932,6 +974,7 @@ struct Memory {
 
   std::string name;
   Limits page_limits;
+  uint32_t page_size;
 };
 
 struct DataSegment {
@@ -1164,6 +1207,17 @@ class StartModuleField : public ModuleFieldMixin<ModuleFieldType::Start> {
   Var start;
 };
 
+struct Custom {
+  explicit Custom(const Location& loc = Location(),
+                  std::string_view name = std::string_view(),
+                  std::vector<uint8_t> data = std::vector<uint8_t>())
+      : name(name), data(data), loc(loc) {}
+
+  std::string name;
+  std::vector<uint8_t> data;
+  Location loc;
+};
+
 struct Module {
   Index GetFuncTypeIndex(const Var&) const;
   Index GetFuncTypeIndex(const FuncDeclaration&) const;
@@ -1235,6 +1289,7 @@ struct Module {
   std::vector<Memory*> memories;
   std::vector<DataSegment*> data_segments;
   std::vector<Var*> starts;
+  std::vector<Custom> customs;
 
   BindingHash tag_bindings;
   BindingHash func_bindings;
@@ -1245,6 +1300,21 @@ struct Module {
   BindingHash memory_bindings;
   BindingHash data_segment_bindings;
   BindingHash elem_segment_bindings;
+
+  // For a subset of features, the BinaryReaderIR tracks whether they are
+  // actually used by the module. wasm2c (CWriter) uses this information to
+  // limit its output in some cases.
+  struct {
+    bool simd = false;
+    bool exceptions = false;
+    bool threads = false;
+  } features_used;
+
+  // The BinaryReaderIR tracks function references used by the module, whether
+  // in element segment initializers, global initializers, or functions. wasm2c
+  // needs to emit wrappers for any functions that might get used as function
+  // references, and uses this information to limit its output.
+  std::set<Index> used_func_refs;
 };
 
 enum class ScriptModuleType {

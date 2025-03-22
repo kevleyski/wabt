@@ -64,11 +64,12 @@ inline bool MemoryType::classof(const ExternType* type) {
   return type->kind == skind;
 }
 
-inline MemoryType::MemoryType(Limits limits)
-    : ExternType(ExternKind::Memory), limits(limits) {
+inline MemoryType::MemoryType(Limits limits, uint32_t page_size)
+    : ExternType(ExternKind::Memory), limits(limits), page_size(page_size) {
   // Always set max.
   if (!limits.has_max) {
-    this->limits.max = limits.is_64 ? WABT_MAX_PAGES64 : WABT_MAX_PAGES32;
+    this->limits.max = WABT_BYTES_TO_MIN_PAGES(
+        (limits.is_64 ? UINT64_MAX : UINT32_MAX), page_size);
   }
 }
 
@@ -145,7 +146,7 @@ inline bool FreeList<Ref>::IsUsed(Index index) const {
 }
 
 template <>
-inline FreeList<Ref>::~FreeList<Ref>() {}
+inline FreeList<Ref>::~FreeList() {}
 
 template <>
 template <typename... Args>
@@ -181,7 +182,7 @@ bool FreeList<T>::IsUsed(Index index) const {
 }
 
 template <typename T>
-FreeList<T>::~FreeList<T>() {
+FreeList<T>::~FreeList() {
   for (auto object : list_) {
     if ((reinterpret_cast<uintptr_t>(object) & ptrFreeBit) == 0) {
       delete object;

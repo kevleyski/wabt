@@ -21,10 +21,17 @@
 
 #define WABT_BINARY_MAGIC 0x6d736100
 #define WABT_BINARY_VERSION 1
+#define WABT_BINARY_LAYER_MODULE 0
+#define WABT_BINARY_LAYER_COMPONENT 1
 #define WABT_BINARY_LIMITS_HAS_MAX_FLAG 0x1
 #define WABT_BINARY_LIMITS_IS_SHARED_FLAG 0x2
 #define WABT_BINARY_LIMITS_IS_64_FLAG 0x4
-#define WABT_BINARY_LIMITS_ALL_FLAGS                                     \
+#define WABT_BINARY_LIMITS_HAS_CUSTOM_PAGE_SIZE_FLAG 0x8
+#define WABT_BINARY_LIMITS_ALL_MEMORY_FLAGS                              \
+  (WABT_BINARY_LIMITS_HAS_MAX_FLAG | WABT_BINARY_LIMITS_IS_SHARED_FLAG | \
+   WABT_BINARY_LIMITS_IS_64_FLAG |                                       \
+   WABT_BINARY_LIMITS_HAS_CUSTOM_PAGE_SIZE_FLAG)
+#define WABT_BINARY_LIMITS_ALL_TABLE_FLAGS                               \
   (WABT_BINARY_LIMITS_HAS_MAX_FLAG | WABT_BINARY_LIMITS_IS_SHARED_FLAG | \
    WABT_BINARY_LIMITS_IS_64_FLAG)
 
@@ -89,12 +96,8 @@ enum class NameSectionSubsection {
   Global = 7,
   ElemSegment = 8,
   DataSegment = 9,
-  // tag names are yet part of the extended-name-section proposal (because it
-  // only deals with naming things that are in the spec already).  However, we
-  // include names for Tags in wabt using this enum value on the basis that tags
-  // can only exist when exceptions are enabled and that engines should ignore
-  // unknown name types.
-  Tag = 10,
+  Field = 10,
+  Tag = 11,
 
   First = Module,
   Last = Tag,

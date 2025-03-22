@@ -75,6 +75,8 @@ class NameResolver : public ExprVisitor::DelegateNop {
   Result OnStoreExpr(StoreExpr*) override;
   Result BeginTryExpr(TryExpr*) override;
   Result EndTryExpr(TryExpr*) override;
+  Result BeginTryTableExpr(TryTableExpr*) override;
+  Result EndTryTableExpr(TryTableExpr*) override;
   Result OnThrowExpr(ThrowExpr*) override;
   Result OnRethrowExpr(RethrowExpr*) override;
   Result OnSimdLoadLaneExpr(SimdLoadLaneExpr*) override;
@@ -348,8 +350,8 @@ Result NameResolver::OnLocalTeeExpr(LocalTeeExpr* expr) {
 }
 
 Result NameResolver::OnMemoryCopyExpr(MemoryCopyExpr* expr) {
-  ResolveMemoryVar(&expr->srcmemidx);
   ResolveMemoryVar(&expr->destmemidx);
+  ResolveMemoryVar(&expr->srcmemidx);
   return Result::Ok;
 }
 
@@ -442,6 +444,23 @@ Result NameResolver::EndTryExpr(TryExpr*) {
   return Result::Ok;
 }
 
+Result NameResolver::BeginTryTableExpr(TryTableExpr* expr) {
+  for (TableCatch& catch_ : expr->catches) {
+    if (!catch_.IsCatchAll()) {
+      ResolveTagVar(&catch_.tag);
+    }
+    ResolveLabelVar(&catch_.target);
+  }
+  PushLabel(expr->block.label);
+  ResolveBlockDeclarationVar(&expr->block.decl);
+  return Result::Ok;
+}
+
+Result NameResolver::EndTryTableExpr(TryTableExpr*) {
+  PopLabel();
+  return Result::Ok;
+}
+
 Result NameResolver::OnCatchExpr(TryExpr*, Catch* catch_) {
   if (!catch_->IsCatchAll()) {
     ResolveTagVar(&catch_->var);
@@ -488,12 +507,12 @@ void NameResolver::VisitFunc(Func* func) {
     ResolveFuncTypeVar(&func->decl.type_var);
   }
 
-  func->bindings.FindDuplicates(
-      [=](const BindingHash::value_type& a, const BindingHash::value_type& b) {
-        const char* desc =
-            (a.second.index < func->GetNumParams()) ? "parameter" : "local";
-        PrintDuplicateBindingsError(a, b, desc);
-      });
+  func->bindings.FindDuplicates([func, this](const BindingHash::value_type& a,
+                                             const BindingHash::value_type& b) {
+    const char* desc =
+        (a.second.index < func->GetNumParams()) ? "parameter" : "local";
+    PrintDuplicateBindingsError(a, b, desc);
+  });
 
   visitor_.VisitFunc(func);
   current_func_ = nullptr;

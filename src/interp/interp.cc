@@ -78,6 +78,14 @@ Result Match(const Limits& expected,
     }
   }
 
+  if (expected.is_64 && !actual.is_64) {
+    *out_msg = StringPrintf("expected i64 memory, but i32 memory provided");
+    return Result::Error;
+  } else if (actual.is_64 && !expected.is_64) {
+    *out_msg = StringPrintf("expected i32 memory, but i64 memory provided");
+    return Result::Error;
+  }
+
   return Result::Ok;
 }
 
@@ -128,6 +136,12 @@ std::unique_ptr<ExternType> MemoryType::Clone() const {
 Result Match(const MemoryType& expected,
              const MemoryType& actual,
              std::string* out_msg) {
+  if (expected.page_size != actual.page_size) {
+    *out_msg = StringPrintf(
+        "page_size mismatch in imported memory, expected %u but got %u.",
+        expected.page_size, actual.page_size);
+    return Result::Error;
+  }
   return Match(expected.limits, actual.limits, out_msg);
 }
 
@@ -225,6 +239,8 @@ bool Store::HasValueType(Ref ref, ValueType type) const {
     case ValueType::FuncRef:
       return obj->kind() == ObjectKind::DefinedFunc ||
              obj->kind() == ObjectKind::HostFunc;
+    case ValueType::ExnRef:
+      return obj->kind() == ObjectKind::Exception;
     default:
       return false;
   }
@@ -566,7 +582,7 @@ Result Table::Copy(Store& store,
 //// Memory ////
 Memory::Memory(class Store&, MemoryType type)
     : Extern(skind), type_(type), pages_(type.limits.initial) {
-  data_.resize(pages_ * WABT_PAGE_SIZE);
+  data_.resize(pages_ * type_.page_size);
 }
 
 void Memory::Mark(class Store&) {}
@@ -587,7 +603,7 @@ Result Memory::Grow(u64 count) {
     auto old_size = data_.size();
 #endif
     pages_ = new_pages;
-    data_.resize(new_pages * WABT_PAGE_SIZE);
+    data_.resize(new_pages * type_.page_size);
 #if WABT_BIG_ENDIAN
     std::move_backward(data_.begin(), data_.begin() + old_size, data_.end());
     std::fill(data_.begin(), data_.end() - old_size, 0);
@@ -705,19 +721,19 @@ Result Tag::Match(Store& store,
 }
 
 //// ElemSegment ////
-ElemSegment::ElemSegment(const ElemDesc* desc, Instance::Ptr& inst)
+ElemSegment::ElemSegment(Store& store,
+                         const ElemDesc* desc,
+                         Instance::Ptr& inst)
     : desc_(desc) {
+  Trap::Ptr out_trap;
   elements_.reserve(desc->elements.size());
   for (auto&& elem_expr : desc->elements) {
-    switch (elem_expr.kind) {
-      case ElemKind::RefNull:
-        elements_.emplace_back(Ref::Null);
-        break;
-
-      case ElemKind::RefFunc:
-        elements_.emplace_back(inst->funcs_[elem_expr.index]);
-        break;
+    Value value;
+    Ref func_ref = DefinedFunc::New(store, inst.ref(), elem_expr).ref();
+    if (Failed(inst->CallInitFunc(store, func_ref, &value, &out_trap))) {
+      WABT_UNREACHABLE;  // valid const expression cannot trap
     }
+    elements_.push_back(value.Get<Ref>());
   }
 }
 
@@ -845,7 +861,7 @@ Instance::Ptr Instance::Instantiate(Store& store,
 
   // Elems.
   for (auto&& desc : mod->desc().elems) {
-    inst->elems_.emplace_back(&desc, inst);
+    inst->elems_.emplace_back(store, &desc, inst);
   }
 
   // Datas.
@@ -873,7 +889,14 @@ Instance::Ptr Instance::Instantiate(Store& store,
         if (Failed(inst->CallInitFunc(store, func_ref, &value, out_trap))) {
           return {};
         }
-        u32 offset = value.Get<u32>();
+
+        u64 offset;
+        if (table->type().limits.is_64) {
+          offset = value.Get<u64>();
+        } else {
+          offset = value.Get<u32>();
+        }
+
         if (pass == Check) {
           result = table->IsValidRange(offset, segment.size()) ? Result::Ok
                                                                : Result::Error;
@@ -886,10 +909,11 @@ Instance::Ptr Instance::Instantiate(Store& store,
 
         if (Failed(result)) {
           *out_trap = Trap::New(
-              store, StringPrintf(
-                         "out of bounds table access: elem segment is "
-                         "out of bounds: [%u, %" PRIu64 ") >= max value %u",
-                         offset, u64{offset} + segment.size(), table->size()));
+              store,
+              StringPrintf("out of bounds table access: elem segment is "
+                           "out of bounds: [%" PRIu64 ", %" PRIu64
+                           ") >= max value %u",
+                           offset, offset + segment.size(), table->size()));
           return {};
         }
       } else if (desc.mode == SegmentMode::Declared) {
@@ -1107,7 +1131,7 @@ T WABT_VECTORCALL Thread::Pop() {
 }
 
 Value Thread::Pop() {
-  if (!refs_.empty() && refs_.back() >= values_.size()) {
+  if (!refs_.empty() && refs_.back() >= values_.size() - 1) {
     refs_.pop_back();
   }
   auto value = values_.back();
@@ -1117,6 +1141,26 @@ Value Thread::Pop() {
 
 u64 Thread::PopPtr(const Memory::Ptr& memory) {
   return memory->type().limits.is_64 ? Pop<u64>() : Pop<u32>();
+}
+
+u64 Thread::PopPtr(const Table::Ptr& table) {
+  return table->type().limits.is_64 ? Pop<u64>() : Pop<u32>();
+}
+
+void Thread::PushPtr(const Memory::Ptr& memory, u64 value) {
+  if (memory->type().limits.is_64) {
+    Push<u64>(value);
+  } else {
+    Push<u32>(value);
+  }
+}
+
+void Thread::PushPtr(const Table::Ptr& table, u64 value) {
+  if (table->type().limits.is_64) {
+    Push<u64>(value);
+  } else {
+    Push<u32>(value);
+  }
 }
 
 template <typename T>
@@ -1190,7 +1234,7 @@ RunResult Thread::StepInternal(Trap::Ptr* out_trap) {
     case O::ReturnCallIndirect: {
       Table::Ptr table{store_, inst_->tables()[instr.imm_u32x2.fst]};
       auto&& func_type = mod_->desc().func_types[instr.imm_u32x2.snd];
-      auto entry = Pop<u32>();
+      u64 entry = PopPtr(table);
       TRAP_IF(entry >= table->elements().size(), "undefined table index");
       auto new_func_ref = table->elements()[entry];
       TRAP_IF(new_func_ref == Ref::Null, "uninitialized table element");
@@ -1210,16 +1254,24 @@ RunResult Thread::StepInternal(Trap::Ptr* out_trap) {
       break;
 
     case O::Select: {
-      // TODO: need to mark whether this is a ref.
       auto cond = Pop<u32>();
+      auto ref = false;
+      // check if either is a ref
+      ref |= !refs_.empty() && refs_.back() == values_.size();
       Value false_ = Pop();
+      ref |= !refs_.empty() && refs_.back() == values_.size();
       Value true_ = Pop();
+      if (ref) {
+        refs_.push_back(values_.size());
+      }
       Push(cond ? true_ : false_);
       break;
     }
 
+    case O::InterpLocalGetRef:
+      refs_.push_back(values_.size());
+      [[fallthrough]];
     case O::LocalGet:
-      // TODO: need to mark whether this is a ref.
       Push(Pick(instr.imm_u32));
       break;
 
@@ -1233,8 +1285,14 @@ RunResult Thread::StepInternal(Trap::Ptr* out_trap) {
       Pick(instr.imm_u32) = Pick(1);
       break;
 
+    case O::InterpMarkRef:
+      refs_.push_back(values_.size() - instr.imm_u32);
+      break;
+
+    case O::InterpGlobalGetRef:
+      refs_.push_back(values_.size());
+      [[fallthrough]];
     case O::GlobalGet: {
-      // TODO: need to mark whether this is a ref.
       Global::Ptr global{store_, inst_->globals()[instr.imm_u32]};
       Push(global->Get());
       break;
@@ -1273,29 +1331,17 @@ RunResult Thread::StepInternal(Trap::Ptr* out_trap) {
 
     case O::MemorySize: {
       Memory::Ptr memory{store_, inst_->memories()[instr.imm_u32]};
-      if (memory->type().limits.is_64) {
-        Push<u64>(memory->PageSize());
-      } else {
-        Push<u32>(static_cast<u32>(memory->PageSize()));
-      }
+      PushPtr(memory, memory->PageSize());
       break;
     }
 
     case O::MemoryGrow: {
       Memory::Ptr memory{store_, inst_->memories()[instr.imm_u32]};
       u64 old_size = memory->PageSize();
-      if (memory->type().limits.is_64) {
-        if (Failed(memory->Grow(Pop<u64>()))) {
-          Push<s64>(-1);
-        } else {
-          Push<u64>(old_size);
-        }
+      if (Failed(memory->Grow(PopPtr(memory)))) {
+        PushPtr(memory, -1);
       } else {
-        if (Failed(memory->Grow(Pop<u32>()))) {
-          Push<s32>(-1);
-        } else {
-          Push<u32>(old_size);
-        }
+        PushPtr(memory, old_size);
       }
       break;
     }
@@ -1446,9 +1492,7 @@ RunResult Thread::StepInternal(Trap::Ptr* out_trap) {
 
     case O::InterpAlloca:
       values_.resize(values_.size() + instr.imm_u32);
-      // refs_ doesn't need to be updated; We may be allocating space for
-      // references, but they will be initialized to null, so it is OK if we
-      // don't mark them.
+      // refs_ will be marked in InterpMarkRef.
       break;
 
     case O::InterpBrUnless:
@@ -1467,13 +1511,23 @@ RunResult Thread::StepInternal(Trap::Ptr* out_trap) {
       auto drop = instr.imm_u32x2.fst;
       auto keep = instr.imm_u32x2.snd;
       // Shift kept refs down.
-      for (auto iter = refs_.rbegin(); iter != refs_.rend(); ++iter) {
+      auto iter = refs_.rbegin();
+      for (; iter != refs_.rend(); ++iter) {
         if (*iter >= values_.size() - keep) {
           *iter -= drop;
         } else {
           break;
         }
       }
+      // Find dropped refs.
+      auto drop_iter = iter;
+      for (; drop_iter != refs_.rend(); ++drop_iter) {
+        if (*iter < values_.size() - keep - drop) {
+          break;
+        }
+      }
+      // Erase dropped refs.
+      refs_.erase(drop_iter.base(), iter.base());
       std::move(values_.end() - keep, values_.end(),
                 values_.end() - drop - keep);
       values_.resize(values_.size() - drop);
@@ -1927,6 +1981,14 @@ RunResult Thread::StepInternal(Trap::Ptr* out_trap) {
                          exceptions_[exceptions_.size() - exn_index - 1]};
       return DoThrow(exn);
     }
+    case O::ThrowRef: {
+      Ref ref = Pop<Ref>();
+      assert(store_.HasValueType(ref, ValueType::ExnRef));
+      // FIXME better error message?
+      TRAP_IF(ref == Ref::Null, "expected exnref, got null");
+      Exception::Ptr exn = store_.UnsafeGet<Exception>(ref);
+      return DoThrow(exn);
+    }
 
     // The following opcodes are either never generated or should never be
     // executed.
@@ -1941,6 +2003,7 @@ RunResult Thread::StepInternal(Trap::Ptr* out_trap) {
 
     case O::CallRef:
     case O::Try:
+    case O::TryTable:
     case O::Catch:
     case O::CatchAll:
     case O::Delegate:
@@ -1973,7 +2036,7 @@ RunResult Thread::DoCall(const Func::Ptr& func, Trap::Ptr* out_trap) {
     PushValues(func_type.results, results);
   } else {
     if (PushCall(*cast<DefinedFunc>(func.get()), out_trap) == RunResult::Trap) {
-      return RunResult::Ok;
+      return RunResult::Trap;
     }
   }
   return RunResult::Ok;
@@ -2071,7 +2134,7 @@ RunResult Thread::DoMemoryInit(Instr instr, Trap::Ptr* out_trap) {
   auto&& data = inst_->datas()[instr.imm_u32x2.snd];
   auto size = Pop<u32>();
   auto src = Pop<u32>();
-  auto dst = PopPtr(memory);
+  u64 dst = PopPtr(memory);
   TRAP_IF(Failed(memory->Init(dst, data, src, size)),
           "out of bounds memory access: memory.init out of bounds");
   return RunResult::Ok;
@@ -2085,9 +2148,9 @@ RunResult Thread::DoDataDrop(Instr instr) {
 RunResult Thread::DoMemoryCopy(Instr instr, Trap::Ptr* out_trap) {
   Memory::Ptr mem_dst{store_, inst_->memories()[instr.imm_u32x2.fst]};
   Memory::Ptr mem_src{store_, inst_->memories()[instr.imm_u32x2.snd]};
-  auto size = PopPtr(mem_src);
-  auto src = PopPtr(mem_src);
-  auto dst = PopPtr(mem_dst);
+  u64 size = PopPtr(mem_src);
+  u64 src = PopPtr(mem_src);
+  u64 dst = PopPtr(mem_dst);
   // TODO: change to "out of bounds"
   TRAP_IF(Failed(Memory::Copy(*mem_dst, dst, *mem_src, src, size)),
           "out of bounds memory access: memory.copy out of bound");
@@ -2096,9 +2159,9 @@ RunResult Thread::DoMemoryCopy(Instr instr, Trap::Ptr* out_trap) {
 
 RunResult Thread::DoMemoryFill(Instr instr, Trap::Ptr* out_trap) {
   Memory::Ptr memory{store_, inst_->memories()[instr.imm_u32]};
-  auto size = PopPtr(memory);
+  u64 size = PopPtr(memory);
   auto value = Pop<u32>();
-  auto dst = PopPtr(memory);
+  u64 dst = PopPtr(memory);
   TRAP_IF(Failed(memory->Fill(dst, value, size)),
           "out of bounds memory access: memory.fill out of bounds");
   return RunResult::Ok;
@@ -2109,7 +2172,7 @@ RunResult Thread::DoTableInit(Instr instr, Trap::Ptr* out_trap) {
   auto&& elem = inst_->elems()[instr.imm_u32x2.snd];
   auto size = Pop<u32>();
   auto src = Pop<u32>();
-  auto dst = Pop<u32>();
+  u64 dst = PopPtr(table);
   TRAP_IF(Failed(table->Init(store_, dst, elem, src, size)),
           "out of bounds table access: table.init out of bounds");
   return RunResult::Ok;
@@ -2123,9 +2186,9 @@ RunResult Thread::DoElemDrop(Instr instr) {
 RunResult Thread::DoTableCopy(Instr instr, Trap::Ptr* out_trap) {
   Table::Ptr table_dst{store_, inst_->tables()[instr.imm_u32x2.fst]};
   Table::Ptr table_src{store_, inst_->tables()[instr.imm_u32x2.snd]};
-  auto size = Pop<u32>();
-  auto src = Pop<u32>();
-  auto dst = Pop<u32>();
+  u64 size = PopPtr(table_src);
+  u64 src = PopPtr(table_src);
+  u64 dst = PopPtr(table_dst);
   TRAP_IF(Failed(Table::Copy(store_, *table_dst, dst, *table_src, src, size)),
           "out of bounds table access: table.copy out of bounds");
   return RunResult::Ok;
@@ -2133,12 +2196,12 @@ RunResult Thread::DoTableCopy(Instr instr, Trap::Ptr* out_trap) {
 
 RunResult Thread::DoTableGet(Instr instr, Trap::Ptr* out_trap) {
   Table::Ptr table{store_, inst_->tables()[instr.imm_u32]};
-  auto index = Pop<u32>();
+  u64 index = PopPtr(table);
   Ref ref;
   TRAP_IF(Failed(table->Get(index, &ref)),
-          StringPrintf(
-              "out of bounds table access: table.get at %u >= max value %u",
-              index, table->size()));
+          StringPrintf("out of bounds table access: table.get at %" PRIu64
+                       " >= max value %u",
+                       index, table->size()));
   Push(ref);
   return RunResult::Ok;
 }
@@ -2146,38 +2209,38 @@ RunResult Thread::DoTableGet(Instr instr, Trap::Ptr* out_trap) {
 RunResult Thread::DoTableSet(Instr instr, Trap::Ptr* out_trap) {
   Table::Ptr table{store_, inst_->tables()[instr.imm_u32]};
   auto ref = Pop<Ref>();
-  auto index = Pop<u32>();
+  u64 index = PopPtr(table);
   TRAP_IF(Failed(table->Set(store_, index, ref)),
-          StringPrintf(
-              "out of bounds table access: table.set at %u >= max value %u",
-              index, table->size()));
+          StringPrintf("out of bounds table access: table.set at %" PRIu64
+                       " >= max value %u",
+                       index, table->size()));
   return RunResult::Ok;
 }
 
 RunResult Thread::DoTableGrow(Instr instr, Trap::Ptr* out_trap) {
   Table::Ptr table{store_, inst_->tables()[instr.imm_u32]};
   u32 old_size = table->size();
-  auto delta = Pop<u32>();
+  auto delta = PopPtr(table);
   auto ref = Pop<Ref>();
   if (Failed(table->Grow(store_, delta, ref))) {
-    Push<s32>(-1);
+    PushPtr(table, -1);
   } else {
-    Push<u32>(old_size);
+    PushPtr(table, old_size);
   }
   return RunResult::Ok;
 }
 
 RunResult Thread::DoTableSize(Instr instr) {
   Table::Ptr table{store_, inst_->tables()[instr.imm_u32]};
-  Push<u32>(table->size());
+  PushPtr(table, table->size());
   return RunResult::Ok;
 }
 
 RunResult Thread::DoTableFill(Instr instr, Trap::Ptr* out_trap) {
   Table::Ptr table{store_, inst_->tables()[instr.imm_u32]};
-  auto size = Pop<u32>();
+  u64 size = PopPtr(table);
   auto value = Pop<Ref>();
-  auto dst = Pop<u32>();
+  u64 dst = PopPtr(table);
   TRAP_IF(Failed(table->Fill(store_, dst, value, size)),
           "out of bounds table access: table.fill out of bounds");
   return RunResult::Ok;
@@ -2469,8 +2532,8 @@ RunResult Thread::DoSimdDot() {
   S result;
   for (u8 i = 0; i < S::lanes; ++i) {
     u8 laneidx = i * 2;
-    SL lo = SL(lhs[laneidx]) * SL(rhs[laneidx]);
-    SL hi = SL(lhs[laneidx + 1]) * SL(rhs[laneidx + 1]);
+    SL lo = SL(lhs[laneidx] * rhs[laneidx]);
+    SL hi = SL(lhs[laneidx + 1] * rhs[laneidx + 1]);
     result[i] = Add(lo, hi);
   }
   Push(result);
@@ -2486,8 +2549,8 @@ RunResult Thread::DoSimdDotAdd() {
   S result;
   for (u8 i = 0; i < S::lanes; ++i) {
     u8 laneidx = i * 2;
-    SL lo = SL(lhs[laneidx]) * SL(rhs[laneidx]);
-    SL hi = SL(lhs[laneidx + 1]) * SL(rhs[laneidx + 1]);
+    SL lo = SL(lhs[laneidx] * rhs[laneidx]);
+    SL hi = SL(lhs[laneidx + 1] * rhs[laneidx + 1]);
     result[i] = Add(lo, hi);
     result[i] = Add(result[i], acc[i]);
   }
@@ -2582,6 +2645,7 @@ RunResult Thread::DoThrow(Exception::Ptr exn) {
   Tag::Ptr exn_tag{store_, exn->tag()};
   bool popped_frame = false;
   bool had_catch_all = false;
+  bool target_exnref = false;
 
   // DoThrow is responsible for unwinding the stack at the point at which an
   // exception is thrown, and also branching to the appropriate catch within
@@ -2599,7 +2663,8 @@ RunResult Thread::DoThrow(Exception::Ptr exn) {
     auto iter = handlers.rbegin();
     while (iter != handlers.rend()) {
       const HandlerDesc& handler = *iter;
-      if (pc >= handler.try_start_offset && pc < handler.try_end_offset) {
+      // pc points to the *next* instruction by the time we're in DoThrow.
+      if (pc > handler.try_start_offset && pc <= handler.try_end_offset) {
         // For a try-delegate, skip part of the traversal by directly going
         // up to an outer handler specified by the delegate depth.
         if (handler.kind == HandlerKind::Delegate) {
@@ -2618,6 +2683,7 @@ RunResult Thread::DoThrow(Exception::Ptr exn) {
             target_offset = _catch.offset;
             target_values = (*iter).values;
             target_exceptions = (*iter).exceptions;
+            target_exnref = _catch.ref;
             goto found_handler;
           }
         }
@@ -2626,6 +2692,7 @@ RunResult Thread::DoThrow(Exception::Ptr exn) {
           target_values = (*iter).values;
           target_exceptions = (*iter).exceptions;
           had_catch_all = true;
+          target_exnref = handler.catch_all_ref;
           goto found_handler;
         }
       }
@@ -2662,6 +2729,9 @@ found_handler:
   // Also push exception payload values if applicable.
   if (!had_catch_all) {
     PushValues(exn_tag->type().signature, exn->args());
+  }
+  if (target_exnref) {
+    Push(exn.ref());
   }
   return RunResult::Ok;
 }
@@ -2716,8 +2786,11 @@ std::string Thread::TraceSource::Pick(Index index, Instr instr) {
                           v.u32(2), v.u32(3));
     }
 
+      // clang-format off
     case ValueType::FuncRef:    reftype = "funcref"; break;
     case ValueType::ExternRef:  reftype = "externref"; break;
+    case ValueType::ExnRef:     reftype = "exnref"; break;
+      // clang-format on
 
     default:
       WABT_UNREACHABLE;

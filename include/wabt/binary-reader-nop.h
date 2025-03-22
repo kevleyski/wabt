@@ -89,7 +89,8 @@ class BinaryReaderNop : public BinaryReaderDelegate {
                         std::string_view module_name,
                         std::string_view field_name,
                         Index memory_index,
-                        const Limits* page_limits) override {
+                        const Limits* page_limits,
+                        uint32_t page_size) override {
     return Result::Ok;
   }
   Result OnImportGlobal(Index import_index,
@@ -130,7 +131,9 @@ class BinaryReaderNop : public BinaryReaderDelegate {
   /* Memory section */
   Result BeginMemorySection(Offset size) override { return Result::Ok; }
   Result OnMemoryCount(Index count) override { return Result::Ok; }
-  Result OnMemory(Index index, const Limits* limits) override {
+  Result OnMemory(Index index,
+                  const Limits* limits,
+                  uint32_t page_size) override {
     return Result::Ok;
   }
   Result EndMemorySection() override { return Result::Ok; }
@@ -172,6 +175,7 @@ class BinaryReaderNop : public BinaryReaderDelegate {
   Result OnLocalDecl(Index decl_index, Index count, Type type) override {
     return Result::Ok;
   }
+  Result EndLocalDecls() override { return Result::Ok; }
 
   /* Function expressions; called between BeginFunctionBody and
    EndFunctionBody */
@@ -273,7 +277,7 @@ class BinaryReaderNop : public BinaryReaderDelegate {
   Result OnLocalSetExpr(Index local_index) override { return Result::Ok; }
   Result OnLocalTeeExpr(Index local_index) override { return Result::Ok; }
   Result OnLoopExpr(Type sig_type) override { return Result::Ok; }
-  Result OnMemoryCopyExpr(Index srcmemidx, Index destmemidx) override {
+  Result OnMemoryCopyExpr(Index destmemidx, Index srcmemidx) override {
     return Result::Ok;
   }
   Result OnDataDropExpr(Index segment_index) override { return Result::Ok; }
@@ -315,7 +319,12 @@ class BinaryReaderNop : public BinaryReaderDelegate {
     return Result::Ok;
   }
   Result OnThrowExpr(Index depth) override { return Result::Ok; }
+  Result OnThrowRefExpr() override { return Result::Ok; }
   Result OnTryExpr(Type sig_type) override { return Result::Ok; }
+  Result OnTryTableExpr(Type sig_type,
+                        const CatchClauseVector& catches) override {
+    return Result::Ok;
+  }
   Result OnUnaryExpr(Opcode opcode) override { return Result::Ok; }
   Result OnTernaryExpr(Opcode opcode) override { return Result::Ok; }
   Result OnUnreachableExpr() override { return Result::Ok; }
@@ -370,12 +379,10 @@ class BinaryReaderNop : public BinaryReaderDelegate {
   Result OnElemSegmentElemExprCount(Index index, Index count) override {
     return Result::Ok;
   }
-  Result OnElemSegmentElemExpr_RefNull(Index segment_index,
-                                       Type type) override {
+  Result BeginElemExpr(Index elem_index, Index expr_index) override {
     return Result::Ok;
   }
-  Result OnElemSegmentElemExpr_RefFunc(Index segment_index,
-                                       Index func_index) override {
+  Result EndElemExpr(Index elem_index, Index expr_index) override {
     return Result::Ok;
   }
   Result EndElemSegment(Index index) override { return Result::Ok; }
@@ -521,6 +528,15 @@ class BinaryReaderNop : public BinaryReaderDelegate {
   }
   Result EndTargetFeaturesSection() override { return Result::Ok; }
 
+  /* Generic custom section */
+  Result BeginGenericCustomSection(Offset size) override { return Result::Ok; }
+  Result OnGenericCustomSection(std::string_view name,
+                                const void* data,
+                                Offset size) override {
+    return Result::Ok;
+  };
+  Result EndGenericCustomSection() override { return Result::Ok; }
+
   /* Linking section */
   Result BeginLinkingSection(Offset size) override { return Result::Ok; }
   Result OnSymbolCount(Index count) override { return Result::Ok; }
@@ -569,7 +585,7 @@ class BinaryReaderNop : public BinaryReaderDelegate {
     return Result::Ok;
   }
   Result OnInitFunctionCount(Index count) override { return Result::Ok; }
-  Result OnInitFunction(uint32_t priority, Index function_index) override {
+  Result OnInitFunction(uint32_t priority, Index symbol_index) override {
     return Result::Ok;
   }
   Result OnComdatCount(Index count) override { return Result::Ok; }
